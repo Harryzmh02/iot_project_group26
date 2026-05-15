@@ -1,236 +1,95 @@
 # Smart Gomoku Board State Monitoring System
 
-## Current Hardware and Interface Progress
+## Current Hardware and Integration Progress
 
-This document summarises the current hardware setup, Arduino feedback module, Raspberry Pi test scripts, and the serial communication interface prepared for later integration with the computer vision and game-state subsystems.
+This repository currently contains the completed first-stage hardware and Raspberry Pi–Arduino integration work for the Smart Gomoku Board State Monitoring System.
+
+The work so far focuses on:
+
+- Arduino LED/buzzer feedback
+- Raspberry Pi to Arduino serial communication
+- Reusable Python integration utilities
+- Raspberry Pi camera capture testing
+- Periodic board image capture
+- Hardware wiring and camera setup documentation
 
 ---
 
-## 1. Current Prototype Hardware
-
-The current physical prototype uses:
+## Current Hardware
 
 - Raspberry Pi 3 Model B
 - Raspberry Pi Camera Module
 - Arduino Uno
-- Breadboards
+- Breadboard
 - Jumper wires
 - LEDs
 - Resistors
-- Passive buzzer, if available
-- Gomoku board and black/white pieces
+- Passive buzzer
+- Gomoku board and pieces
 
-> Note: The project proposal previously referred to a Raspberry Pi 4. The actual board currently used in the prototype is a **Raspberry Pi 3 Model B**.
+> The project proposal previously mentioned Raspberry Pi 4, but the actual prototype uses a **Raspberry Pi 3 Model B**.
 
 ---
 
-## 2. Current Repository Structure
+## Repository Structure
 
 ```text
-hardware/
-  wiring_notes.md
-
 arduino_feedback/
   gomoku_feedback.ino
+
+hardware/
+  camera_mount_notes.md
+  wiring_notes.md
+
+raspberrypi_capture/
+  periodic_board_capture.py
+
+raspberrypi_integration/
+  arduino_feedback_client.py
+  demo_feedback_sequence.py
 
 raspberrypi_tests/
   camera_test.py
   pi_to_arduino_test.py
 
 sample_images/
-  empty_board.jpg
-  black_center.jpg
-  white_center.jpg
-  mixed_board.jpg
+  img_sample.md
 ```
 
 ---
 
-## 3. Completed Work So Far
+## Work Completed by Minghao
 
-### Hardware Preparation
+### 1. Arduino Feedback Module
 
-- Raspberry Pi 3 and Pi Camera Module have been prepared for overhead board image capture.
-- Arduino Uno has been prepared as a dedicated physical feedback controller.
-- Basic breadboard wiring for LEDs and buzzer has been planned and documented.
-- Common ground wiring has been confirmed:
-  - Arduino `GND` is connected to the breadboard ground rail.
-  - All LED and buzzer ground returns connect to the same shared ground rail.
-
-### Arduino Feedback Module
-
-The Arduino feedback module has been implemented and tested.
-
-It listens for single-byte commands over USB serial and responds with:
-
-- LED feedback
-- Buzzer feedback
-- Serial acknowledgment messages
-
-### Raspberry Pi to Arduino Serial Communication
-
-USB serial communication between the Raspberry Pi 3 and Arduino Uno has been successfully tested.
-
-Example test output:
-
-```text
-Startup: Arduino feedback module ready
-Sending: B
-Arduino replied: ACK:B
-Sending: W
-Arduino replied: ACK:W
-Sending: E
-Arduino replied: ACK:E
-Sending: R
-Arduino replied: ACK:R
-Serial test complete.
-```
-
----
-
-## 4. Serial Command Protocol
-
-The Raspberry Pi sends a single-byte command to the Arduino.
-
-| Command | Meaning | Arduino Behaviour | Serial Reply |
-|---|---|---|---|
-| `B` | Black move detected | Black-side LED feedback and short beep | `ACK:B` |
-| `W` | White move detected | White-side LED feedback and short beep | `ACK:W` |
-| `E` | Error or invalid detection state | Error flash pattern and error beep | `ACK:E` |
-| `R` | Reset feedback state | Turns off feedback LEDs | `ACK:R` |
-
-This protocol is intended to be called by the Raspberry Pi vision or game-state subsystem after a board-state update has been identified.
-
----
-
-## 5. Arduino Feedback Module
-
-### File
+The Arduino firmware has been implemented in:
 
 ```text
 arduino_feedback/gomoku_feedback.ino
 ```
 
-### Current Behaviour
+It listens for single-byte serial commands from the Raspberry Pi and controls LEDs and buzzer feedback.
 
-#### `B` — Black Move Detected
-- Turns on black feedback LED
-- Turns off white feedback LED
-- Plays a short beep
-
-#### `W` — White Move Detected
-- Turns on white feedback LED
-- Turns off black feedback LED
-- Plays a short beep
-
-#### `E` — Error / Invalid State
-- Flashes both LEDs
-- Plays an error beep pattern
-- Resets the LED state afterward
-
-#### `R` — Reset
-- Turns off all feedback LEDs
+| Command | Meaning | Arduino Action | Reply |
+|---|---|---|---|
+| `B` | Black move detected | Black LED + short beep | `ACK:B` |
+| `W` | White move detected | White LED + short beep | `ACK:W` |
+| `E` | Error / invalid state | Flash LEDs + error beep | `ACK:E` |
+| `R` | Reset | Turn off feedback LEDs | `ACK:R` |
 
 ---
 
-## 6. Arduino Wiring Summary
+### 2. Raspberry Pi to Arduino Serial Communication
 
-### Common Ground
+Serial communication between the Raspberry Pi 3 and Arduino Uno has been tested successfully.
 
-```text
-Arduino GND -> Breadboard negative rail
-```
-
-All component ground connections return to this breadboard ground rail.
-
-### Black Move LED
-
-```text
-Arduino D8 -> 220Ω resistor -> LED anode
-LED cathode -> GND rail
-```
-
-### White Move LED
-
-```text
-Arduino D9 -> 220Ω resistor -> LED anode
-LED cathode -> GND rail
-```
-
-### Buzzer
-
-```text
-Arduino D6 -> buzzer positive terminal
-Buzzer negative terminal -> GND rail
-```
-
-More detailed notes are stored in:
-
-```text
-hardware/wiring_notes.md
-```
-
----
-
-## 7. Raspberry Pi Camera Test
-
-### File
-
-```text
-raspberrypi_tests/camera_test.py
-```
-
-### Purpose
-
-This script verifies that:
-
-- The Raspberry Pi Camera Module is detected
-- The camera can capture an image successfully
-- A board image can be generated for future computer vision testing
-
-### Run
-
-```bash
-python3 raspberrypi_tests/camera_test.py
-```
-
-### Expected Output
-
-```text
-Saved camera test image: board_test.jpg
-```
-
----
-
-## 8. Raspberry Pi to Arduino Serial Test
-
-### File
+Test script:
 
 ```text
 raspberrypi_tests/pi_to_arduino_test.py
 ```
 
-### Purpose
-
-This script verifies that:
-
-- Raspberry Pi can detect the Arduino serial port
-- Raspberry Pi can send serial commands
-- Arduino can receive commands and send acknowledgment responses
-
-### Typical Arduino Port
-
-```text
-/dev/ttyACM0
-```
-
-### Run
-
-```bash
-python3 raspberrypi_tests/pi_to_arduino_test.py
-```
-
-### Expected Output
+Expected output:
 
 ```text
 Startup: Arduino feedback module ready
@@ -247,128 +106,235 @@ Serial test complete.
 
 ---
 
-## 9. Sample Board Images
+### 3. Reusable Arduino Feedback Client
 
-The `sample_images/` folder is intended to store representative images for computer vision development and calibration.
-
-Current target image set:
+A reusable Python client has been added for future integration:
 
 ```text
-sample_images/
-  empty_board.jpg
-  black_center.jpg
-  white_center.jpg
-  mixed_board.jpg
+raspberrypi_integration/
+  arduino_feedback_client.py
+  demo_feedback_sequence.py
 ```
 
-These images should support:
+Other modules can trigger hardware feedback without handling low-level serial logic.
 
-- Grid detection
+Example:
+
+```python
+from raspberrypi_integration.arduino_feedback_client import ArduinoFeedbackClient
+
+feedback = ArduinoFeedbackClient()
+
+if feedback.connect():
+    feedback.black_move()
+    feedback.white_move()
+    feedback.error()
+    feedback.reset()
+    feedback.close()
+```
+
+Available methods:
+
+| Method | Purpose |
+|---|---|
+| `black_move()` | Trigger black move feedback |
+| `white_move()` | Trigger white move feedback |
+| `error()` | Trigger error feedback |
+| `reset()` | Reset LEDs |
+| `connect()` | Open serial connection |
+| `close()` | Close serial connection |
+
+---
+
+### 4. Camera Capture Utilities
+
+Camera test script:
+
+```text
+raspberrypi_tests/camera_test.py
+```
+
+Purpose:
+
+- Confirm Pi Camera Module is detected
+- Capture a test board image
+
+Run:
+
+```bash
+python3 raspberrypi_tests/camera_test.py
+```
+
+Periodic capture script:
+
+```text
+raspberrypi_capture/periodic_board_capture.py
+```
+
+Purpose:
+
+- Capture board images at fixed intervals
+- Save timestamped frames for CV testing and later integration
+
+Run:
+
+```bash
+python3 raspberrypi_capture/periodic_board_capture.py
+```
+
+---
+
+## Hardware Documentation
+
+### Wiring Notes
+
+Detailed wiring information is stored in:
+
+```text
+hardware/wiring_notes.md
+```
+
+Current wiring summary:
+
+```text
+Arduino GND -> Breadboard GND rail
+
+D8 -> resistor -> black LED -> GND
+D9 -> resistor -> white LED -> GND
+D6 -> buzzer positive
+buzzer negative -> GND
+```
+
+---
+
+### Camera Mount Notes
+
+Camera setup and calibration considerations are documented in:
+
+```text
+hardware/camera_mount_notes.md
+```
+
+The camera should remain:
+
+- Stable
+- Top-down
+- Able to capture the full 15×15 board
+- Fixed after calibration where possible
+
+---
+
+## Sample Image Dataset Plan
+
+A planned image dataset specification has been prepared in:
+
+```text
+sample_images/img_sample.md
+```
+
+This dataset is intended to support:
+
+- Grid calibration
 - Stone detection
 - Colour thresholding
-- Calibration of the board capture setup
-- Early OpenCV testing
+- Edge/corner position testing
+- Robustness testing under different lighting conditions
+
+Actual images can be added once the overhead camera setup is finalised.
 
 ---
 
-## 10. Integration Notes for Vision / Game-State Subsystem
+## How Other Team Members Can Continue
 
-The Raspberry Pi vision subsystem can trigger Arduino feedback by sending one serial byte after determining the relevant board event.
+### Computer Vision / Board Detection
 
-### Suggested Mapping
+The CV module can use the feedback client after detecting a board event.
 
-| Vision / Game-State Event | Serial Command |
+Example:
+
+```python
+from raspberrypi_integration.arduino_feedback_client import ArduinoFeedbackClient
+
+feedback = ArduinoFeedbackClient()
+
+if feedback.connect():
+    if detected_piece_colour == "black":
+        feedback.black_move()
+    elif detected_piece_colour == "white":
+        feedback.white_move()
+    else:
+        feedback.error()
+
+    feedback.close()
+```
+
+---
+
+### Game-State Logic
+
+Suggested event mapping:
+
+| Game-State Event | Feedback Call |
 |---|---|
-| New black piece detected | `B` |
-| New white piece detected | `W` |
-| Detection ambiguity or invalid board state | `E` |
-| New game or reset state | `R` |
+| Valid black move | `black_move()` |
+| Valid white move | `white_move()` |
+| Invalid / uncertain update | `error()` |
+| New game / reset | `reset()` |
 
-### Example Python Integration
+---
 
-```python
-arduino.write(b'B')
-```
+### IoT Dashboard / MQTT Integration
 
-or
+The current feedback events can also be reused for dashboard updates or MQTT messages.
 
-```python
-arduino.write(b'W')
-```
-
-The Arduino will then return an acknowledgment such as:
+Possible system flow:
 
 ```text
-ACK:B
+Pi Camera
+   |
+   v
+Board Detection
+   |
+   v
+Game-State Logic
+   |
+   +--> Arduino LED/Buzzer Feedback
+   |
+   +--> MQTT / Backend / Dashboard
 ```
 
 ---
 
-## 11. Current Status
+## Recommended Next Steps
 
-### Completed
-
-- Arduino serial feedback firmware written
-- Raspberry Pi to Arduino serial test successful
-- Serial command protocol defined
-- Initial hardware wiring plan documented
-- Raspberry Pi 3 confirmed as the actual processor platform
-- Camera capture test script prepared
-
-### In Progress
-
-- Stable overhead camera mount
-- Collection of sample Gomoku board images
-- Physical LED / buzzer hardware refinement
-- Integration with board-state recognition output
-
----
-
-## 12. Recommended Next Steps
-
-1. Finalise the overhead camera mount so the board can be captured from a repeatable top-down angle.
-2. Collect and commit the initial sample image dataset.
-3. Integrate the computer vision subsystem with the Arduino serial command protocol.
-4. Decide whether serial commands should represent:
-   - detected player move, or
-   - broader board-state status / event type
-5. Validate the end-to-end flow:
+1. Finalise the overhead camera mount.
+2. Capture and add the planned board image dataset.
+3. Integrate CV board detection with the Arduino feedback client.
+4. Connect game-state events to both:
+   - Hardware feedback
+   - MQTT/dashboard updates
+5. Build the next end-to-end prototype:
 
 ```text
 Camera capture
--> Board-state detection
--> Game-state decision
--> Serial command to Arduino
--> LED / buzzer feedback
+-> Board detection
+-> Move classification
+-> Arduino feedback
+-> Dashboard update
 ```
 
 ---
 
-## 13. Current End-to-End Target Architecture
+## Current Contribution Summary
 
-```text
-Raspberry Pi Camera Module
-        |
-        v
-Raspberry Pi 3
-- image capture
-- board-state processing
-- game-state handling
-- serial communication
-        |
-        v
-Arduino Uno
-- LED feedback
-- buzzer feedback
-```
+The following components have been completed and are ready for team use:
 
-Future system integration may also include:
-
-```text
-Raspberry Pi 3
-        |
-        v
-IoT dashboard / MQTT / backend services
-```
-
-depending on the final implementation scope.
+- Arduino LED/buzzer feedback firmware
+- Raspberry Pi–Arduino serial protocol
+- Serial communication test script
+- Reusable feedback client for integration
+- Camera test script
+- Periodic image capture script
+- Wiring documentation
+- Camera setup documentation
+- Sample image dataset plan
