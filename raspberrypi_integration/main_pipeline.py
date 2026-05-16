@@ -9,6 +9,10 @@ of this file. Ashish and Jason fill those in on their branches; the
 signatures here must not change without coordinating with them.
 """
 
+import sys
+import os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'raspberrypi_capture'))
+
 import time
 import numpy as np
 from picamera2 import Picamera2
