@@ -44,6 +44,10 @@ hardware/
 raspberrypi_capture/
   periodic_board_capture.py
 
+computer_vision/
+  gomoku_cv.py
+  README.md
+
 raspberrypi_integration/
   arduino_feedback_client.py
   demo_feedback_sequence.py
@@ -247,6 +251,26 @@ Actual images can be added once the overhead camera setup is finalised.
 ## How Other Team Members Can Continue
 
 ### Computer Vision / Board Detection
+
+The initial OpenCV board-detection module has been added in:
+
+```text
+computer_vision/gomoku_cv.py
+```
+
+It detects black/white stones, maps them to 15Ã—15 board coordinates, compares the new board with the previous board state, and can optionally call the Arduino feedback client.
+
+Run on a captured image:
+
+```bash
+python3 computer_vision/gomoku_cv.py --image captured_frames/board_YYYYMMDD_HHMMSS.jpg
+```
+
+Run with Arduino feedback:
+
+```bash
+python3 computer_vision/gomoku_cv.py --image captured_frames/board_YYYYMMDD_HHMMSS.jpg --feedback
+```
 
 The CV module can use the feedback client after detecting a board event.
 
