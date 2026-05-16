@@ -1,5 +1,4 @@
 """
-Main pipeline orchestrator — Ethan Zhang (system integration lead).
 
 Data flow:
   Pi Camera → frame stability check → image preprocessing
