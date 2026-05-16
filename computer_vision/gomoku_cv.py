@@ -334,7 +334,9 @@ def main():
     elif args.camera is not None:
         run_camera_mode(args)
     else:
-        parser.error("Please provide --image sample_images/01_empty_board.jpg or --camera 0")
+        print("No image or camera provided. Starting camera 0 by default.")
+        args.camera = 0
+        run_camera_mode(args)
 
 
 if __name__ == "__main__":
