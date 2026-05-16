@@ -36,11 +36,10 @@ def run_cv_pipeline(frame: np.ndarray, board_corners: list | None) -> dict | Non
 
     Expected return value:
         {
-            "player":   "black" | "white",
-            "row":      int,          # 0-indexed
-            "col":      int,          # 0-indexed
-            "move_num": int,
-            "board":    list[list[int]]  # 15x15 matrix
+            "player": "black" | "white",
+            "row":    int,   # 0-indexed (pipeline converts to 1-indexed for Jason)
+            "col":    int,   # 0-indexed (pipeline converts to 1-indexed for Jason)
+            "board":  list[list[int]]  # 15x15 matrix
         }
     Returns None when no new move is detected.
 
@@ -54,10 +53,15 @@ def publish_move(move: dict) -> None:
     """
     Publish a detected move to the MQTT broker.
 
-    `move` has the same shape as the dict returned by run_cv_pipeline,
-    plus a "timestamp" key added by this pipeline before calling.
+    Receives exactly the format Jason's publisher expects:
+        {
+            "player":  "black" | "white",
+            "row":     int,   # 1-indexed (1–15)
+            "column":  int,   # 1-indexed (1–15)
+        }
+    Jason's publisher adds move_number and timestamp before sending to MQTT.
 
-    TODO (Jason): replace the stub body with paho-mqtt publish.
+    TODO (Jason): replace the stub body with your paho-mqtt publish call.
     """
     pass  # stub
 
@@ -98,7 +102,6 @@ def main():
                 time.sleep(CAPTURE_INTERVAL_SECONDS)
                 continue
 
-            move["timestamp"] = time.strftime("%Y-%m-%dT%H:%M:%S")
             print(f"[Pipeline] Move detected: {move}")
 
             # Arduino LED + buzzer feedback
@@ -108,8 +111,12 @@ def main():
                 elif move["player"] == "white":
                     arduino.white_move()
 
-            # MQTT publish
-            publish_move(move)
+            # Convert 0-indexed (Ashish) → 1-indexed + rename col→column (Jason)
+            publish_move({
+                "player": move["player"],
+                "row":    move["row"] + 1,
+                "column": move["col"] + 1,
+            })
 
             time.sleep(CAPTURE_INTERVAL_SECONDS)
 

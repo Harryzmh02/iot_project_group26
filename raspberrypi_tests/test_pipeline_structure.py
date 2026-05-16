@@ -45,13 +45,11 @@ def test_pipeline_cv_stub_returns_none():
 
 def test_pipeline_mqtt_stub_runs_without_error():
     import main_pipeline
+    # matches Jason's expected format: 1-indexed, "column" not "col"
     dummy_move = {
         "player": "black",
-        "row": 7,
-        "col": 7,
-        "move_num": 1,
-        "board": [[0]*15 for _ in range(15)],
-        "timestamp": "2026-05-16T12:00:00"
+        "row": 8,
+        "column": 8,
     }
     try:
         main_pipeline.publish_move(dummy_move)
