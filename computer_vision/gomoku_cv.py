@@ -7,6 +7,11 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+try:
+    from picamera2 import Picamera2
+except ImportError:
+    Picamera2 = None
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -271,9 +276,16 @@ def run_image_mode(args):
 
 def run_camera_mode(args):
     corners = parse_corners(args.corners) if args.corners else None
-    camera = cv2.VideoCapture(args.camera)
+
+    if Picamera2 is not None:
+        run_picamera2_mode(args, corners)
+        return
+
+    camera = cv2.VideoCapture(args.camera, cv2.CAP_V4L2)
     if not camera.isOpened():
-        raise RuntimeError("Could not open camera")
+        raise RuntimeError(
+            "Could not open camera. On Raspberry Pi, install picamera2 or check the camera is enabled."
+        )
 
     feedback = None
     if args.feedback:
@@ -304,6 +316,47 @@ def run_camera_mode(args):
                 break
     finally:
         camera.release()
+        if feedback:
+            feedback.close()
+        cv2.destroyAllWindows()
+
+
+def run_picamera2_mode(args, corners):
+    camera = Picamera2()
+    config = camera.create_preview_configuration(main={"format": "RGB888", "size": (1280, 720)})
+    camera.configure(config)
+
+    feedback = None
+    if args.feedback:
+        feedback = create_feedback_client(args.arduino_port)
+        if not feedback.connect():
+            feedback = None
+
+    old_board = np.zeros((BOARD_SIZE, BOARD_SIZE), dtype=np.uint8)
+    try:
+        camera.start()
+        print("Started Raspberry Pi camera with Picamera2. Press q to quit.")
+
+        while True:
+            rgb_frame = camera.capture_array()
+            frame = cv2.cvtColor(rgb_frame, cv2.COLOR_RGB2BGR)
+
+            board, stones, result_image, _, _ = process_frame(frame, corners)
+            changes = compute_delta(old_board, board)
+
+            for change in changes:
+                if change["type"] == "new_move":
+                    print(f"New move: {change['color']} at row {change['row']}, col {change['col']}")
+
+            if feedback:
+                send_feedback(feedback, changes)
+
+            old_board = board.copy()
+            cv2.imshow("Gomoku OpenCV Detection", result_image)
+            if cv2.waitKey(1) & 0xFF == ord("q"):
+                break
+    finally:
+        camera.stop()
         if feedback:
             feedback.close()
         cv2.destroyAllWindows()
