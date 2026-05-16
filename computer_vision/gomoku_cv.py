@@ -19,6 +19,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 
 BOARD_SIZE = 15
+IMAGE_SIZE = 800
 EMPTY = 0
 BLACK = 1
 WHITE = 2
@@ -32,6 +33,11 @@ class Stone:
     row: int
     col: int
     area: float
+
+
+def preprocess_frame(frame):
+    resized = cv2.resize(frame, (IMAGE_SIZE, IMAGE_SIZE), interpolation=cv2.INTER_AREA)
+    return cv2.GaussianBlur(resized, (5, 5), 0)
 
 
 def order_corners(points):
@@ -57,7 +63,7 @@ def parse_corners(corner_text):
     return order_corners(points)
 
 
-def warp_board(image, corners, output_size=900):
+def warp_board(image, corners, output_size=IMAGE_SIZE):
     source = order_corners(corners)
     target = np.array(
         [[0, 0], [output_size - 1, 0], [output_size - 1, output_size - 1], [0, output_size - 1]],
@@ -163,7 +169,15 @@ def compute_delta(old_board, new_board):
                     }
                 )
             else:
-                changes.append({"type": "changed_or_removed", "row": row, "col": col})
+                changes.append(
+                    {
+                        "type": "changed_or_removed",
+                        "row": row,
+                        "col": col,
+                        "old": old_value,
+                        "new": new_value,
+                    }
+                )
     return changes
 
 
@@ -194,7 +208,7 @@ def draw_results(board_image, stones):
 
 
 def process_frame(frame, corners):
-    board_image = warp_board(frame, corners) if corners is not None else cv2.resize(frame, (900, 900))
+    board_image = warp_board(frame, corners) if corners is not None else preprocess_frame(frame)
     board, stones, black_mask, white_mask = find_stones(board_image)
     return board, stones, draw_results(board_image, stones), black_mask, white_mask
 
