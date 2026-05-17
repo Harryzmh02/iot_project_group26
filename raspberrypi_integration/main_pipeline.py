@@ -39,7 +39,7 @@ BOARD_CORNERS = None
 _old_board = np.zeros((15, 15), dtype=np.uint8)
 
 
-def run_cv_pipeline(frame: np.ndarray, board_corners) -> dict | None:
+def run_cv_pipeline(frame: np.ndarray, board_corners):
     global _old_board
     corners = parse_corners(board_corners) if isinstance(board_corners, str) else board_corners
     board, _, _, _, _ = process_frame(frame, corners)
