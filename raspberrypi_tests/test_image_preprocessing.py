@@ -1,8 +1,39 @@
 import sys
 import os
+import types
+import numpy as np
+
+# Stub cv2 if not installed (e.g. running on macOS without OpenCV).
+# On the Pi where cv2 is installed the real library is used instead.
+if "cv2" not in sys.modules:
+    try:
+        import cv2
+    except ImportError:
+        cv2_mod = types.ModuleType("cv2")
+        cv2_mod.INTER_AREA = 3
+
+        def _resize(src, dsize, **kw):
+            h, w = dsize[1], dsize[0]
+            return np.zeros((h, w, src.shape[2]) if src.ndim == 3 else (h, w), dtype=src.dtype)
+
+        def _gaussian_blur(src, ksize, **kw):
+            return src.copy()
+
+        def _get_perspective_transform(src, dst):
+            return np.eye(3, dtype=np.float32)
+
+        def _warp_perspective(src, M, dsize):
+            h, w = dsize[1], dsize[0]
+            return np.zeros((h, w, src.shape[2]) if src.ndim == 3 else (h, w), dtype=src.dtype)
+
+        cv2_mod.resize = _resize
+        cv2_mod.GaussianBlur = _gaussian_blur
+        cv2_mod.getPerspectiveTransform = _get_perspective_transform
+        cv2_mod.warpPerspective = _warp_perspective
+        sys.modules["cv2"] = cv2_mod
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'raspberrypi_capture'))
 
-import numpy as np
 from image_preprocessing import preprocess_frame, crop_to_board
 
 
