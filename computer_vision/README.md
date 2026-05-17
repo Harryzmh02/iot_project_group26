@@ -33,6 +33,12 @@ Then run CV detection on one image:
 python3 computer_vision/gomoku_cv.py --image captured_frames/board_YYYYMMDD_HHMMSS.jpg
 ```
 
+To tune HSV thresholds without editing code:
+
+```bash
+python3 computer_vision/gomoku_cv.py --image captured_frames/board_YYYYMMDD_HHMMSS.jpg --black-low 0,0,0 --black-high 180,255,75 --white-low 0,0,155 --white-high 180,80,255
+```
+
 The script creates:
 
 - `detected_board.jpg`
@@ -47,6 +53,26 @@ After detecting one new move, the CV module can call Minghao's feedback client:
 ```bash
 python3 computer_vision/gomoku_cv.py --image captured_frames/board_YYYYMMDD_HHMMSS.jpg --feedback
 ```
+
+If your Arduino is not on `/dev/ttyACM0`, pass the port:
+
+```bash
+python3 computer_vision/gomoku_cv.py --image captured_frames/board_YYYYMMDD_HHMMSS.jpg --feedback --arduino-port /dev/ttyUSB0
+```
+
+On the first run, `board_state.json` does not exist yet, so the script will skip sending feedback and only establish the baseline board state.
+
+## Run With A Live Camera
+
+You can also run the detector directly from a USB or Pi camera. The script defaults to camera `0` if no option is provided:
+
+```bash
+python3 computer_vision/gomoku_cv.py --camera 0
+```
+
+On Raspberry Pi, the script prefers `picamera2` when available. For standard webcam testing, it falls back to OpenCV's camera capture.
+
+> Note: `--camera` mode still requires the board to fill the frame or to be precisely aligned. If your camera view includes table or background around the board, pass `--corners` so the module can warp the board into a square grid.
 
 If your Arduino is not on `/dev/ttyACM0`, pass the port:
 

@@ -24,6 +24,32 @@ EMPTY = 0
 BLACK = 1
 WHITE = 2
 
+DEFAULT_HSV_THRESHOLDS = {
+    "black_low": np.array([0, 0, 0], dtype=np.uint8),
+    "black_high": np.array([180, 255, 75], dtype=np.uint8),
+    "white_low": np.array([0, 0, 155], dtype=np.uint8),
+    "white_high": np.array([180, 80, 255], dtype=np.uint8),
+}
+
+
+def parse_hsv_triplet(text):
+    values = [int(value.strip()) for value in text.split(",")]
+    if len(values) != 3:
+        raise ValueError("HSV ranges must contain 3 comma-separated numbers")
+    for value in values:
+        if value < 0 or value > 255:
+            raise ValueError("HSV values must be between 0 and 255")
+    return np.array(values, dtype=np.uint8)
+
+
+def parse_hsv_thresholds(args):
+    return {
+        "black_low": parse_hsv_triplet(args.black_low),
+        "black_high": parse_hsv_triplet(args.black_high),
+        "white_low": parse_hsv_triplet(args.white_low),
+        "white_high": parse_hsv_triplet(args.white_high),
+    }
+
 
 @dataclass
 class Stone:
@@ -118,12 +144,15 @@ def find_stones_from_mask(mask, color, image_size):
     return stones
 
 
-def find_stones(board_image):
+def find_stones(board_image, thresholds=None):
+    if thresholds is None:
+        thresholds = DEFAULT_HSV_THRESHOLDS
+
     hsv = cv2.cvtColor(board_image, cv2.COLOR_BGR2HSV)
     image_size = board_image.shape[0]
 
-    black_mask = cv2.inRange(hsv, np.array([0, 0, 0]), np.array([180, 255, 75]))
-    white_mask = cv2.inRange(hsv, np.array([0, 0, 155]), np.array([180, 80, 255]))
+    black_mask = cv2.inRange(hsv, thresholds["black_low"], thresholds["black_high"])
+    white_mask = cv2.inRange(hsv, thresholds["white_low"], thresholds["white_high"])
 
     kernel = np.ones((5, 5), np.uint8)
     black_mask = cv2.morphologyEx(black_mask, cv2.MORPH_OPEN, kernel)
@@ -151,6 +180,9 @@ def find_stones(board_image):
 
 
 def compute_delta(old_board, new_board):
+    if old_board is None:
+        return []
+
     changes = []
     for row in range(BOARD_SIZE):
         for col in range(BOARD_SIZE):
@@ -207,15 +239,18 @@ def draw_results(board_image, stones):
     return output
 
 
-def process_frame(frame, corners):
+def process_frame(frame, corners=None, thresholds=None):
+    if corners is None:
+        print("[CV] Warning: no corners provided; mapping assumes the board fills the full frame.")
+
     board_image = warp_board(frame, corners) if corners is not None else preprocess_frame(frame)
-    board, stones, black_mask, white_mask = find_stones(board_image)
+    board, stones, black_mask, white_mask = find_stones(board_image, thresholds=thresholds)
     return board, stones, draw_results(board_image, stones), black_mask, white_mask
 
 
 def load_board_state(path):
     if not path.exists():
-        return np.zeros((BOARD_SIZE, BOARD_SIZE), dtype=np.uint8)
+        return None
     return np.array(json.loads(path.read_text(encoding="utf-8")), dtype=np.uint8)
 
 
@@ -257,7 +292,8 @@ def run_image_mode(args):
         raise FileNotFoundError(f"Could not open image: {args.image}")
 
     corners = parse_corners(args.corners) if args.corners else None
-    board, stones, result_image, black_mask, white_mask = process_frame(image, corners)
+    thresholds = parse_hsv_thresholds(args)
+    board, stones, result_image, black_mask, white_mask = process_frame(image, corners, thresholds=thresholds)
     old_board = load_board_state(args.state)
     changes = compute_delta(old_board, board)
 
@@ -274,12 +310,15 @@ def run_image_mode(args):
         print("- No new move found")
 
     if args.feedback:
-        feedback = create_feedback_client(args.arduino_port)
-        if feedback.connect():
-            try:
-                send_feedback(feedback, changes)
-            finally:
-                feedback.close()
+        if old_board is None:
+            print("[CV] No prior board state found; feedback is disabled for first run.")
+        else:
+            feedback = create_feedback_client(args.arduino_port)
+            if feedback.connect():
+                try:
+                    send_feedback(feedback, changes)
+                finally:
+                    feedback.close()
 
     save_board_state(args.state, board)
     cv2.imwrite(str(args.output), result_image)
@@ -307,15 +346,23 @@ def run_camera_mode(args):
         if not feedback.connect():
             feedback = None
 
-    old_board = np.zeros((BOARD_SIZE, BOARD_SIZE), dtype=np.uint8)
+    old_board = None
     try:
         while True:
             ok, frame = camera.read()
             if not ok:
                 break
 
-            board, stones, result_image, _, _ = process_frame(frame, corners)
+            board, stones, result_image, _, _ = process_frame(frame, corners, thresholds=parse_hsv_thresholds(args))
             changes = compute_delta(old_board, board)
+
+            if old_board is None:
+                print("[CV] Initial camera frame loaded; using first result as baseline.")
+                old_board = board.copy()
+                cv2.imshow("Gomoku OpenCV Detection", result_image)
+                if cv2.waitKey(1) & 0xFF == ord("q"):
+                    break
+                continue
 
             for change in changes:
                 if change["type"] == "new_move":
@@ -346,7 +393,7 @@ def run_picamera2_mode(args, corners):
         if not feedback.connect():
             feedback = None
 
-    old_board = np.zeros((BOARD_SIZE, BOARD_SIZE), dtype=np.uint8)
+    old_board = None
     try:
         camera.start()
         print("Started Raspberry Pi camera with Picamera2. Press q to quit.")
@@ -355,8 +402,16 @@ def run_picamera2_mode(args, corners):
             rgb_frame = camera.capture_array()
             frame = cv2.cvtColor(rgb_frame, cv2.COLOR_RGB2BGR)
 
-            board, stones, result_image, _, _ = process_frame(frame, corners)
+            board, stones, result_image, _, _ = process_frame(frame, corners, thresholds=parse_hsv_thresholds(args))
             changes = compute_delta(old_board, board)
+
+            if old_board is None:
+                print("[CV] Initial camera frame loaded; using first result as baseline.")
+                old_board = board.copy()
+                cv2.imshow("Gomoku OpenCV Detection", result_image)
+                if cv2.waitKey(1) & 0xFF == ord("q"):
+                    break
+                continue
 
             for change in changes:
                 if change["type"] == "new_move":
@@ -382,6 +437,10 @@ def build_arg_parser():
     parser.add_argument("--camera", type=int, help="Camera number for webcam testing, usually 0")
     parser.add_argument("--corners", help="Board corners: tlx,tly,trx,try,brx,bry,blx,bly")
     parser.add_argument("--state", type=Path, default=Path("board_state.json"))
+    parser.add_argument("--black-low", default="0,0,0", help="Black stone lower HSV threshold")
+    parser.add_argument("--black-high", default="180,255,75", help="Black stone upper HSV threshold")
+    parser.add_argument("--white-low", default="0,0,155", help="White stone lower HSV threshold")
+    parser.add_argument("--white-high", default="180,80,255", help="White stone upper HSV threshold")
     parser.add_argument("--output", type=Path, default=Path("detected_board.jpg"))
     parser.add_argument("--black-mask", type=Path, default=Path("black_mask.jpg"))
     parser.add_argument("--white-mask", type=Path, default=Path("white_mask.jpg"))
