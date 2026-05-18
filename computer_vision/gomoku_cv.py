@@ -466,6 +466,104 @@ def run_picamera2_mode(args, corners):
         cv2.destroyAllWindows()
 
 
+DEMO_MOVES = [
+    ("black", 7, 7), ("white", 7, 8), ("black", 8, 8), ("white", 8, 7),
+    ("black", 9, 9), ("white", 9, 8), ("black", 6, 6), ("white", 6, 7),
+    ("black", 10, 10), ("white", 10, 8), ("black", 5, 5), ("white", 5, 8),
+    ("black", 11, 11), ("white", 11, 8), ("black", 4, 4), ("white", 4, 8),
+    ("black", 3, 3),
+]
+
+
+DEMO_IMG_SIZE = 540
+DEMO_MARGIN = 30
+_STAR_POINTS = {(3, 3), (3, 7), (3, 11), (7, 3), (7, 7), (7, 11), (11, 3), (11, 7), (11, 11)}
+
+
+def _draw_demo_board(placed, current_move=None):
+    img = np.full((DEMO_IMG_SIZE, DEMO_IMG_SIZE, 3), (45, 130, 200), dtype=np.uint8)
+    cell = (DEMO_IMG_SIZE - 2 * DEMO_MARGIN) // (BOARD_SIZE - 1)
+
+    for i in range(BOARD_SIZE):
+        p = DEMO_MARGIN + i * cell
+        cv2.line(img, (DEMO_MARGIN, p), (DEMO_MARGIN + (BOARD_SIZE - 1) * cell, p), (20, 80, 140), 1)
+        cv2.line(img, (p, DEMO_MARGIN), (p, DEMO_MARGIN + (BOARD_SIZE - 1) * cell), (20, 80, 140), 1)
+
+    for r, c in _STAR_POINTS:
+        cx = DEMO_MARGIN + c * cell
+        cy = DEMO_MARGIN + r * cell
+        cv2.circle(img, (cx, cy), 3, (20, 80, 140), -1)
+
+    for color, row, col in placed:
+        cx = DEMO_MARGIN + (col - 1) * cell
+        cy = DEMO_MARGIN + (row - 1) * cell
+        stone_color = (20, 20, 20) if color == "black" else (235, 235, 235)
+        radius = cell // 2 - 1
+        cv2.circle(img, (cx, cy), radius, stone_color, -1)
+        cv2.circle(img, (cx, cy), radius, (80, 80, 80), 1)
+
+    if current_move and placed:
+        color, row, col = placed[-1]
+        cx = DEMO_MARGIN + (col - 1) * cell
+        cy = DEMO_MARGIN + (row - 1) * cell
+        mark = (200, 200, 200) if color == "black" else (50, 50, 50)
+        cv2.circle(img, (cx, cy), 4, mark, -1)
+
+    if current_move:
+        move_num, color, row, col = current_move
+        label = f"Move {move_num}: {color.upper()} at ({row},{col})"
+        cv2.putText(img, label, (10, DEMO_IMG_SIZE - 10),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 255), 1, cv2.LINE_AA)
+
+    return img
+
+
+def run_demo_mode(args):
+    mqtt = create_mqtt_client(args.mqtt_broker) if args.mqtt else None
+
+    feedback = None
+    if args.feedback:
+        feedback = create_feedback_client(args.arduino_port)
+        if not feedback.connect():
+            feedback = None
+
+    print("=== DEMO MODE — replaying scripted game ===")
+    print(f"  {len(DEMO_MOVES)} moves  |  MQTT: {'on' if mqtt else 'off'}  |  Arduino: {'on' if feedback else 'off'}")
+    print("  Press q or Ctrl-C to stop\n")
+
+    placed = []
+    cv2.namedWindow("Gomoku Demo")
+    cv2.imshow("Gomoku Demo", _draw_demo_board([]))
+    cv2.waitKey(1)
+
+    try:
+        for move_number, (color, row, col) in enumerate(DEMO_MOVES, start=1):
+            print(f"Move {move_number:2d}: {color:5s} at row {row}, col {col}")
+            placed.append((color, row, col))
+
+            if mqtt:
+                publish_move(mqtt, args.mqtt_topic, move_number, color, row - 1, col - 1)
+            if feedback:
+                if color == "black":
+                    feedback.black_move()
+                else:
+                    feedback.white_move()
+
+            cv2.imshow("Gomoku Demo", _draw_demo_board(placed, (move_number, color, row, col)))
+            if cv2.waitKey(int(args.demo_interval * 1000)) & 0xFF == ord('q'):
+                break
+    except KeyboardInterrupt:
+        print("\nDemo stopped.")
+    finally:
+        cv2.destroyAllWindows()
+        if feedback:
+            feedback.close()
+        if mqtt:
+            mqtt.loop_stop()
+
+    print("\nDemo complete.")
+
+
 def run_calibrate_mode(args):
     if args.image:
         frame = cv2.imread(str(args.image))
@@ -572,6 +670,8 @@ def build_arg_parser():
     parser.add_argument("--mqtt-broker", default="localhost", help="MQTT broker address")
     parser.add_argument("--mqtt-topic", default="gomoku/move", help="MQTT topic to publish moves on")
     parser.add_argument("--calibrate", action="store_true", help="Click-to-calibrate board corners")
+    parser.add_argument("--demo", action="store_true", help="Replay scripted game through MQTT/Arduino without camera")
+    parser.add_argument("--demo-interval", type=float, default=2.0, help="Seconds between demo moves (default 2)")
     return parser
 
 
@@ -581,7 +681,9 @@ def main():
 
     if args.image and args.camera is not None:
         parser.error("Use either --image or --camera, not both")
-    if args.calibrate:
+    if args.demo:
+        run_demo_mode(args)
+    elif args.calibrate:
         run_calibrate_mode(args)
     elif args.image:
         run_image_mode(args)
