@@ -29,6 +29,9 @@ IMAGE_SIZE = 800
 EMPTY = 0
 BLACK = 1
 WHITE = 2
+ZOOM_RADIUS = 40
+ZOOM_SIZE = 120
+CORNER_LABELS = ["Top-Left", "Top-Right", "Bottom-Right", "Bottom-Left"]
 
 
 @dataclass
@@ -44,6 +47,14 @@ class Stone:
 def preprocess_frame(frame):
     resized = cv2.resize(frame, (IMAGE_SIZE, IMAGE_SIZE), interpolation=cv2.INTER_AREA)
     return cv2.GaussianBlur(resized, (5, 5), 0)
+
+
+def apply_clahe(image):
+    lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
+    l, a, b = cv2.split(lab)
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    l = clahe.apply(l)
+    return cv2.cvtColor(cv2.merge([l, a, b]), cv2.COLOR_LAB2BGR)
 
 
 def order_corners(points):
@@ -215,6 +226,7 @@ def draw_results(board_image, stones):
 
 def process_frame(frame, corners):
     board_image = warp_board(frame, corners) if corners is not None else preprocess_frame(frame)
+    board_image = apply_clahe(board_image)
     board, stones, black_mask, white_mask = find_stones(board_image)
     return board, stones, draw_results(board_image, stones), black_mask, white_mask
 
@@ -454,6 +466,97 @@ def run_picamera2_mode(args, corners):
         cv2.destroyAllWindows()
 
 
+def run_calibrate_mode(args):
+    if args.image:
+        frame = cv2.imread(str(args.image))
+        if frame is None:
+            raise FileNotFoundError(f"Could not open image: {args.image}")
+        frame = cv2.resize(frame, (IMAGE_SIZE, IMAGE_SIZE))
+    else:
+        cam_idx = args.camera if args.camera is not None else 0
+        if Picamera2 is not None:
+            camera = Picamera2()
+            config = camera.create_preview_configuration(main={"format": "RGB888", "size": (1280, 720)})
+            camera.configure(config)
+            camera.start()
+            rgb = camera.capture_array()
+            camera.stop()
+            frame = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+        else:
+            cap = cv2.VideoCapture(cam_idx, cv2.CAP_V4L2)
+            ok, frame = cap.read()
+            cap.release()
+            if not ok:
+                raise RuntimeError("Could not capture frame for calibration")
+        frame = cv2.resize(frame, (IMAGE_SIZE, IMAGE_SIZE))
+
+    clicks = []
+    mouse_pos = [0, 0]
+
+    def on_mouse(event, x, y, flags, param):
+        mouse_pos[0], mouse_pos[1] = x, y
+        if event == cv2.EVENT_LBUTTONDOWN and len(clicks) < 4:
+            clicks.append((x, y))
+            print(f"  {CORNER_LABELS[len(clicks) - 1]}: x={x}, y={y}")
+
+    cv2.namedWindow("Calibrate: click 4 corners (u=undo, Enter=done, q=quit)")
+    cv2.setMouseCallback("Calibrate: click 4 corners (u=undo, Enter=done, q=quit)", on_mouse)
+    print("Click the 4 board corners in order: Top-Left, Top-Right, Bottom-Right, Bottom-Left")
+    print("Press u to undo the last click. Press Enter when done.")
+
+    dot_colors = [(0, 255, 0), (0, 200, 255), (0, 0, 255), (255, 0, 200)]
+    h, w = frame.shape[:2]
+
+    while True:
+        display = frame.copy()
+
+        prompt = CORNER_LABELS[len(clicks)] if len(clicks) < 4 else "Done — press Enter"
+        cv2.putText(display, f"Click: {prompt}  (u=undo)", (10, 26),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 255), 2, cv2.LINE_AA)
+
+        for i, (cx, cy) in enumerate(clicks):
+            cv2.circle(display, (cx, cy), 7, dot_colors[i], -1)
+            cv2.putText(display, CORNER_LABELS[i], (cx + 9, cy - 9),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, dot_colors[i], 1, cv2.LINE_AA)
+
+        # Zoom inset — show magnified area around cursor in bottom-right
+        mx, my = mouse_pos
+        cx1 = max(ZOOM_RADIUS, min(w - ZOOM_RADIUS, mx)) - ZOOM_RADIUS
+        cy1 = max(ZOOM_RADIUS, min(h - ZOOM_RADIUS, my)) - ZOOM_RADIUS
+        patch = frame[cy1:cy1 + 2 * ZOOM_RADIUS, cx1:cx1 + 2 * ZOOM_RADIUS]
+        zoom = cv2.resize(patch, (ZOOM_SIZE, ZOOM_SIZE), interpolation=cv2.INTER_LINEAR)
+        zx = int((mx - cx1) / (2 * ZOOM_RADIUS) * ZOOM_SIZE)
+        zy = int((my - cy1) / (2 * ZOOM_RADIUS) * ZOOM_SIZE)
+        cv2.line(zoom, (zx, 0), (zx, ZOOM_SIZE), (0, 255, 255), 1)
+        cv2.line(zoom, (0, zy), (ZOOM_SIZE, zy), (0, 255, 255), 1)
+        display[h - ZOOM_SIZE - 5:h - 5, w - ZOOM_SIZE - 5:w - 5] = zoom
+        cv2.rectangle(display, (w - ZOOM_SIZE - 6, h - ZOOM_SIZE - 6), (w - 4, h - 4), (0, 255, 255), 1)
+
+        cv2.imshow("Calibrate: click 4 corners (u=undo, Enter=done, q=quit)", display)
+        key = cv2.waitKey(30) & 0xFF
+
+        if key == ord('u') and clicks:
+            clicks.pop()
+            print("  Undid last click")
+        elif key in (13, ord('\r')) and len(clicks) == 4:
+            break
+        elif key == ord('q'):
+            break
+
+    cv2.destroyAllWindows()
+
+    if len(clicks) == 4:
+        corners_str = ",".join(f"{x},{y}" for x, y in clicks)
+        corners_path = Path("board_corners.txt")
+        corners_path.write_text(corners_str)
+        print(f"\nCorners: {corners_str}")
+        print(f"Saved to {corners_path}")
+        print(f"\nRun detection with:")
+        print(f"  python3 computer_vision/gomoku_cv.py --corners {corners_str} --mqtt")
+    else:
+        print("Calibration cancelled — need all 4 corners.")
+
+
 def build_arg_parser():
     parser = argparse.ArgumentParser(description="Smart Gomoku OpenCV board detector")
     parser.add_argument("--image", type=Path, help="Path to a captured board image")
@@ -468,6 +571,7 @@ def build_arg_parser():
     parser.add_argument("--mqtt", action="store_true", help="Publish detected moves to MQTT broker")
     parser.add_argument("--mqtt-broker", default="localhost", help="MQTT broker address")
     parser.add_argument("--mqtt-topic", default="gomoku/move", help="MQTT topic to publish moves on")
+    parser.add_argument("--calibrate", action="store_true", help="Click-to-calibrate board corners")
     return parser
 
 
@@ -477,7 +581,9 @@ def main():
 
     if args.image and args.camera is not None:
         parser.error("Use either --image or --camera, not both")
-    if args.image:
+    if args.calibrate:
+        run_calibrate_mode(args)
+    elif args.image:
         run_image_mode(args)
     elif args.camera is not None:
         run_camera_mode(args)
