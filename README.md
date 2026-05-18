@@ -1,16 +1,17 @@
 # Smart Gomoku Board State Monitoring System
 
-## Current Hardware and Integration Progress
+## Integration Status
 
-This repository currently contains the completed first-stage hardware and Raspberry Pi–Arduino integration work for the Smart Gomoku Board State Monitoring System.
+This repository contains the hardware, computer vision, and IoT integration work for the Smart Gomoku Board State Monitoring System.
 
-The work so far focuses on:
+Completed components:
 
 - Arduino LED/buzzer feedback
 - Raspberry Pi to Arduino serial communication
 - Reusable Python integration utilities
-- Raspberry Pi camera capture testing
-- Periodic board image capture
+- Raspberry Pi camera capture and image preprocessing
+- OpenCV board detection (HSV thresholding, blob detection, grid mapping)
+- MQTT publishing to Node-RED dashboard
 - Hardware wiring and camera setup documentation
 
 ---
@@ -258,9 +259,9 @@ The initial OpenCV board-detection module has been added in:
 computer_vision/gomoku_cv.py
 ```
 
-It detects black/white stones, maps them to 15Ã—15 board coordinates, compares the new board with the previous board state, and can optionally call the Arduino feedback client.
+It detects black/white stones, maps them to 15×15 board coordinates, compares the new board with the previous board state, and can trigger Arduino feedback and publish moves to Jason's MQTT dashboard.
 
-Run on a captured image:
+Run on a captured image (detection only):
 
 ```bash
 python3 computer_vision/gomoku_cv.py --image captured_frames/board_YYYYMMDD_HHMMSS.jpg
@@ -272,24 +273,22 @@ Run with Arduino feedback:
 python3 computer_vision/gomoku_cv.py --image captured_frames/board_YYYYMMDD_HHMMSS.jpg --feedback
 ```
 
-The CV module can use the feedback client after detecting a board event.
+Run with MQTT publishing (requires Mosquitto running and Node-RED loaded with `src/flows.json`):
 
-Example:
+```bash
+python3 computer_vision/gomoku_cv.py --image captured_frames/board_YYYYMMDD_HHMMSS.jpg --mqtt
+```
 
-```python
-from raspberrypi_integration.arduino_feedback_client import ArduinoFeedbackClient
+Run the full pipeline — Arduino feedback + MQTT dashboard + live camera:
 
-feedback = ArduinoFeedbackClient()
+```bash
+python3 computer_vision/gomoku_cv.py --feedback --mqtt
+```
 
-if feedback.connect():
-    if detected_piece_colour == "black":
-        feedback.black_move()
-    elif detected_piece_colour == "white":
-        feedback.white_move()
-    else:
-        feedback.error()
+If Mosquitto is on a different device, pass its IP:
 
-    feedback.close()
+```bash
+python3 computer_vision/gomoku_cv.py --feedback --mqtt --mqtt-broker 192.168.1.100
 ```
 
 ---
@@ -309,43 +308,34 @@ Suggested event mapping:
 
 ### IoT Dashboard / MQTT Integration
 
-The current feedback events can also be reused for dashboard updates or MQTT messages.
+Jason's Node-RED dashboard subscribes to `gomoku/move` and displays the board live.
+The CV module now publishes directly to that topic using `--mqtt`.
 
-Possible system flow:
+End-to-end system flow (fully wired):
 
 ```text
 Pi Camera
    |
    v
-Board Detection
+Board Detection  (computer_vision/gomoku_cv.py)
    |
    v
-Game-State Logic
+Move Delta
    |
-   +--> Arduino LED/Buzzer Feedback
+   +--> Arduino LED/Buzzer  (--feedback)
    |
-   +--> MQTT / Backend / Dashboard
+   +--> MQTT broker → Node-RED dashboard  (--mqtt)
 ```
+
+Jason's Node-RED flow is in `src/flows.json`. Import it at `http://localhost:1880`.
 
 ---
 
 ## Recommended Next Steps
 
-1. Finalise the overhead camera mount.
-2. Capture and add the planned board image dataset.
-3. Integrate CV board detection with the Arduino feedback client.
-4. Connect game-state events to both:
-   - Hardware feedback
-   - MQTT/dashboard updates
-5. Build the next end-to-end prototype:
-
-```text
-Camera capture
--> Board detection
--> Move classification
--> Arduino feedback
--> Dashboard update
-```
+1. Calibrate board corners on the actual overhead camera mount and save the `--corners` values.
+2. Capture a real board image dataset for CV testing under lab lighting.
+3. Run end-to-end system test: camera → CV → Arduino + MQTT simultaneously.
 
 ---
 
@@ -354,11 +344,11 @@ Camera capture
 The following components have been completed and are ready for team use:
 
 - Arduino LED/buzzer feedback firmware
-- Raspberry Pi–Arduino serial protocol
-- Serial communication test script
-- Reusable feedback client for integration
-- Camera test script
-- Periodic image capture script
-- Wiring documentation
-- Camera setup documentation
-- Sample image dataset plan
+- Raspberry Pi–Arduino serial protocol and test script
+- Reusable Arduino feedback client
+- Camera capture and image preprocessing scripts
+- OpenCV board detection module (`computer_vision/gomoku_cv.py`)
+- MQTT integration — CV publishes moves directly to Node-RED dashboard
+- Node-RED dashboard flow (`src/flows.json`) with board visualisation and winner detection
+- Wiring documentation and camera setup notes
+- Test suite covering frame stability, preprocessing, pipeline structure, and CV-MQTT integration
