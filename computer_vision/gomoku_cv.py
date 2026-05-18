@@ -2,10 +2,16 @@ import argparse
 import json
 import sys
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 import cv2
 import numpy as np
+
+try:
+    import paho.mqtt.client as mqtt_client
+except ImportError:
+    mqtt_client = None
 
 try:
     from picamera2 import Picamera2
@@ -216,11 +222,24 @@ def process_frame(frame, corners):
 def load_board_state(path):
     if not path.exists():
         return np.zeros((BOARD_SIZE, BOARD_SIZE), dtype=np.uint8)
-    return np.array(json.loads(path.read_text(encoding="utf-8")), dtype=np.uint8)
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if isinstance(data, dict):
+        return np.array(data["board"], dtype=np.uint8)
+    return np.array(data, dtype=np.uint8)
 
 
-def save_board_state(path, board):
-    path.write_text(json.dumps(board.astype(int).tolist(), indent=2), encoding="utf-8")
+def load_move_counter(path):
+    if not path.exists():
+        return 1
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if isinstance(data, dict):
+        return data.get("move_number", 1)
+    return 1
+
+
+def save_board_state(path, board, move_number=1):
+    data = {"board": board.astype(int).tolist(), "move_number": move_number}
+    path.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
 
 def print_board(board):
@@ -236,19 +255,52 @@ def create_feedback_client(port):
     return ArduinoFeedbackClient(port=port)
 
 
-def send_feedback(feedback, changes):
+def create_mqtt_client(broker, port=1883):
+    if mqtt_client is None:
+        print("[MQTT] paho-mqtt not installed — skipping MQTT publish")
+        return None
+    client = mqtt_client.Client(mqtt_client.CallbackAPIVersion.VERSION2)
+    try:
+        client.connect(broker, port, 60)
+        client.loop_start()
+        print(f"[MQTT] Connected to broker {broker}:{port}")
+        return client
+    except Exception as exc:
+        print(f"[MQTT] Could not connect to broker {broker}:{port} — {exc}")
+        return None
+
+
+def publish_move(client, topic, move_number, color, row, col):
+    # CV uses 0-indexed; dashboard expects 1-indexed with field name "column"
+    payload = json.dumps({
+        "player": color,
+        "row": row + 1,
+        "column": col + 1,
+        "move_number": move_number,
+        "timestamp": datetime.now().isoformat(),
+    })
+    client.publish(topic, payload)
+    print(f"[MQTT] Published: {payload}")
+
+
+def send_feedback(feedback, changes, mqtt=None, topic="gomoku/move", move_counter=None):
     new_moves = [change for change in changes if change["type"] == "new_move"]
     uncertain_changes = [change for change in changes if change["type"] != "new_move"]
 
     if len(new_moves) == 1 and not uncertain_changes:
         move = new_moves[0]
-        if move["color"] == "black":
-            print(f"[Arduino] {feedback.black_move()}")
-        else:
-            print(f"[Arduino] {feedback.white_move()}")
+        if feedback:
+            if move["color"] == "black":
+                print(f"[Arduino] {feedback.black_move()}")
+            else:
+                print(f"[Arduino] {feedback.white_move()}")
+        if mqtt:
+            move_num = next(move_counter) if move_counter else 1
+            publish_move(mqtt, topic, move_num, move["color"], move["row"], move["col"])
     elif changes:
         print("[CV] Uncertain board update, sending error feedback")
-        print(f"[Arduino] {feedback.error()}")
+        if feedback:
+            print(f"[Arduino] {feedback.error()}")
 
 
 def run_image_mode(args):
@@ -273,15 +325,27 @@ def run_image_mode(args):
     else:
         print("- No new move found")
 
+    feedback = None
     if args.feedback:
         feedback = create_feedback_client(args.arduino_port)
-        if feedback.connect():
-            try:
-                send_feedback(feedback, changes)
-            finally:
-                feedback.close()
+        if not feedback.connect():
+            feedback = None
 
-    save_board_state(args.state, board)
+    mqtt = create_mqtt_client(args.mqtt_broker) if args.mqtt else None
+
+    move_number = load_move_counter(args.state)
+    new_moves = [c for c in changes if c["type"] == "new_move"]
+    try:
+        send_feedback(feedback, changes, mqtt=mqtt, topic=args.mqtt_topic,
+                      move_counter=iter(range(move_number, move_number + 1)))
+    finally:
+        if feedback:
+            feedback.close()
+        if mqtt:
+            mqtt.loop_stop()
+
+    next_move_number = move_number + len(new_moves)
+    save_board_state(args.state, board, next_move_number)
     cv2.imwrite(str(args.output), result_image)
     cv2.imwrite(str(args.black_mask), black_mask)
     cv2.imwrite(str(args.white_mask), white_mask)
@@ -307,7 +371,10 @@ def run_camera_mode(args):
         if not feedback.connect():
             feedback = None
 
+    mqtt = create_mqtt_client(args.mqtt_broker) if args.mqtt else None
+
     old_board = np.zeros((BOARD_SIZE, BOARD_SIZE), dtype=np.uint8)
+    move_number = 1
     try:
         while True:
             ok, frame = camera.read()
@@ -321,8 +388,10 @@ def run_camera_mode(args):
                 if change["type"] == "new_move":
                     print(f"New move: {change['color']} at row {change['row']}, col {change['col']}")
 
-            if feedback:
-                send_feedback(feedback, changes)
+            new_moves = [c for c in changes if c["type"] == "new_move"]
+            send_feedback(feedback, changes, mqtt=mqtt, topic=args.mqtt_topic,
+                          move_counter=iter(range(move_number, move_number + len(new_moves) + 1)))
+            move_number += len(new_moves)
 
             old_board = board.copy()
             cv2.imshow("Gomoku OpenCV Detection", result_image)
@@ -332,6 +401,8 @@ def run_camera_mode(args):
         camera.release()
         if feedback:
             feedback.close()
+        if mqtt:
+            mqtt.loop_stop()
         cv2.destroyAllWindows()
 
 
@@ -346,7 +417,10 @@ def run_picamera2_mode(args, corners):
         if not feedback.connect():
             feedback = None
 
+    mqtt = create_mqtt_client(args.mqtt_broker) if args.mqtt else None
+
     old_board = np.zeros((BOARD_SIZE, BOARD_SIZE), dtype=np.uint8)
+    move_number = 1
     try:
         camera.start()
         print("Started Raspberry Pi camera with Picamera2. Press q to quit.")
@@ -362,8 +436,10 @@ def run_picamera2_mode(args, corners):
                 if change["type"] == "new_move":
                     print(f"New move: {change['color']} at row {change['row']}, col {change['col']}")
 
-            if feedback:
-                send_feedback(feedback, changes)
+            new_moves = [c for c in changes if c["type"] == "new_move"]
+            send_feedback(feedback, changes, mqtt=mqtt, topic=args.mqtt_topic,
+                          move_counter=iter(range(move_number, move_number + len(new_moves) + 1)))
+            move_number += len(new_moves)
 
             old_board = board.copy()
             cv2.imshow("Gomoku OpenCV Detection", result_image)
@@ -373,6 +449,8 @@ def run_picamera2_mode(args, corners):
         camera.stop()
         if feedback:
             feedback.close()
+        if mqtt:
+            mqtt.loop_stop()
         cv2.destroyAllWindows()
 
 
@@ -387,6 +465,9 @@ def build_arg_parser():
     parser.add_argument("--white-mask", type=Path, default=Path("white_mask.jpg"))
     parser.add_argument("--feedback", action="store_true", help="Send B/W/E command to Arduino feedback client")
     parser.add_argument("--arduino-port", default="/dev/ttyACM0", help="Arduino serial port")
+    parser.add_argument("--mqtt", action="store_true", help="Publish detected moves to MQTT broker")
+    parser.add_argument("--mqtt-broker", default="localhost", help="MQTT broker address")
+    parser.add_argument("--mqtt-topic", default="gomoku/move", help="MQTT topic to publish moves on")
     return parser
 
 
