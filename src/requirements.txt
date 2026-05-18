@@ -1,2 +1,0 @@
-# Python dependencies for Gomoku IoT MQTT Publisher
-paho-mqtt==2.1.0
