@@ -16,9 +16,6 @@ app/
 dashboard/
   Node-RED flow files and MQTT demo publisher
 
-docs/
-  Setup notes, hardware notes, CV notes, and dashboard guide
-
 firmware/
   Arduino sketch
 
