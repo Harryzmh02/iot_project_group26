@@ -1,0 +1,28 @@
+import time
+
+try:
+    from picamera2 import Picamera2
+except ImportError:
+    Picamera2 = None
+
+
+def main() -> None:
+    if Picamera2 is None:
+        raise RuntimeError(
+            "Picamera2 is not installed. Run this hardware test on a Raspberry Pi with picamera2 available."
+        )
+
+    camera = Picamera2()
+
+    try:
+        camera.start()
+        time.sleep(2)
+        output_file = "board_test.jpg"
+        camera.capture_file(output_file)
+        print(f"Saved camera test image: {output_file}")
+    finally:
+        camera.stop()
+
+
+if __name__ == "__main__":
+    main()
