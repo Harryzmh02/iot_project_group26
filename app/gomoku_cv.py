@@ -18,21 +18,11 @@ try:
 except ModuleNotFoundError:
     _HAS_PREPROCESSING_MODULE = False
 
-BOARD_SIZE = 13
+BOARD_SIZE = 15
 IMAGE_SIZE = 800
 EMPTY = 0
 BLACK = 1
 WHITE = 2
-
-# ArUco marker IDs placed at each board corner (0=TL, 1=TR, 2=BR, 3=BL).
-ARUCO_MARKER_IDS = (0, 1, 2, 3)
-# Index of each marker's inner corner (the corner that faces the board).
-ARUCO_INNER_CORNER_INDEX = {
-    0: 2,  # top-left marker     → its bottom-right corner
-    1: 3,  # top-right marker    → its bottom-left corner
-    2: 0,  # bottom-right marker → its top-left corner
-    3: 1,  # bottom-left marker  → its top-right corner
-}
 
 
 @dataclass
@@ -87,49 +77,6 @@ def _cluster_lines(positions, gap):
         else:
             clusters.append([p])
     return [int(np.mean(c)) for c in clusters]
-
-
-def _detect_aruco_markers(gray_frame):
-    aruco = getattr(cv2, "aruco", None)
-    if aruco is None:
-        return [], None
-    dictionary = aruco.getPredefinedDictionary(aruco.DICT_4X4_50)
-    if hasattr(aruco, "DetectorParameters"):
-        parameters = aruco.DetectorParameters()
-    else:
-        parameters = aruco.DetectorParameters_create()
-    if hasattr(aruco, "ArucoDetector"):
-        detector = aruco.ArucoDetector(dictionary, parameters)
-        corners, ids, _ = detector.detectMarkers(gray_frame)
-    else:
-        corners, ids, _ = aruco.detectMarkers(gray_frame, dictionary, parameters=parameters)
-    return corners, ids
-
-
-def detect_marker_corners(frame):
-    """Use the 4 ArUco markers to find exact board corners.
-
-    Returns a (4, 2) float32 array ordered [TL, TR, BR, BL] using each
-    marker's inner-facing corner, or None if any marker is missing.
-    """
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    marker_corners_list, ids = _detect_aruco_markers(gray)
-    if ids is None:
-        return None
-
-    found = {}
-    for marker_corners, marker_id in zip(marker_corners_list, np.array(ids).reshape(-1)):
-        marker_id = int(marker_id)
-        if marker_id not in ARUCO_INNER_CORNER_INDEX:
-            continue
-        # marker_corners[0] is shape (4,2): [TL,TR,BR,BL] of that marker
-        points = np.array(marker_corners[0], dtype=np.float32)
-        found[marker_id] = points[ARUCO_INNER_CORNER_INDEX[marker_id]]
-
-    if not all(mid in found for mid in ARUCO_MARKER_IDS):
-        return None
-
-    return np.array([found[0], found[1], found[2], found[3]], dtype=np.float32)
 
 
 def auto_detect_corners(image):
@@ -327,11 +274,7 @@ def draw_results(board_image, stones):
     return output
 
 
-def process_frame(frame, corners=None):
-    if corners is None:
-        corners = detect_marker_corners(frame)
-    if corners is None:
-        corners = auto_detect_corners(frame)
+def process_frame(frame, corners):
     board_image = warp_board(frame, corners) if corners is not None else preprocess_frame(frame)
     board, stones, black_mask, white_mask = find_stones(board_image)
     return board, stones, draw_results(board_image, stones), black_mask, white_mask
