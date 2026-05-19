@@ -11,6 +11,7 @@ try:
 except ModuleNotFoundError:
     Picamera2 = None
 
+# Reuse the shared preprocessing module so both code paths stay in sync.
 try:
     from image_preprocessing import preprocess_frame as _preprocess_frame
     _HAS_PREPROCESSING_MODULE = True
@@ -22,14 +23,6 @@ IMAGE_SIZE = 800
 EMPTY = 0
 BLACK = 1
 WHITE = 2
-ARUCO_MARKER_IDS = (0, 1, 2, 3)
-# The corner of each marker that faces the playable board area.
-ARUCO_INNER_CORNER_INDEX = {
-    0: 2,  # top-left marker → bottom-right corner
-    1: 3,  # top-right marker → bottom-left corner
-    2: 0,  # bottom-right marker → top-left corner
-    3: 1,  # bottom-left marker → top-right corner
-}
 
 
 @dataclass
@@ -72,6 +65,78 @@ def parse_corners(corner_text):
     return order_corners(points)
 
 
+def _cluster_lines(positions, gap):
+    """Merge line positions that are within gap pixels of each other."""
+    if not positions:
+        return []
+    sorted_pos = sorted(positions)
+    clusters = [[sorted_pos[0]]]
+    for p in sorted_pos[1:]:
+        if p - clusters[-1][-1] < gap:
+            clusters[-1].append(p)
+        else:
+            clusters.append([p])
+    return [int(np.mean(c)) for c in clusters]
+
+
+def auto_detect_corners(image):
+    """Detect board corners automatically using Hough line transform.
+
+    Returns a (4, 2) float32 array [TL, TR, BR, BL], or None if detection fails.
+    """
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+    edges = cv2.Canny(blurred, 30, 100)
+
+    h, w = image.shape[:2]
+    min_line_len = int(min(h, w) * 0.15)
+    lines = cv2.HoughLinesP(
+        edges, 1, np.pi / 180,
+        threshold=60,
+        minLineLength=min_line_len,
+        maxLineGap=20,
+    )
+    if lines is None:
+        return None
+
+    h_positions, v_positions = [], []
+    for x1, y1, x2, y2 in lines[:, 0]:
+        angle = abs(np.degrees(np.arctan2(y2 - y1, x2 - x1)))
+        if angle < 20 or angle > 160:
+            h_positions.append((y1 + y2) / 2)
+        elif 70 < angle < 110:
+            v_positions.append((x1 + x2) / 2)
+
+    cluster_gap = min(h, w) * 0.04
+    h_clusters = _cluster_lines(h_positions, cluster_gap)
+    v_clusters = _cluster_lines(v_positions, cluster_gap)
+
+    if len(h_clusters) < 2 or len(v_clusters) < 2:
+        return None
+
+    top, bottom = h_clusters[0], h_clusters[-1]
+    left, right = v_clusters[0], v_clusters[-1]
+
+    if bottom - top < min(h, w) * 0.3 or right - left < min(h, w) * 0.3:
+        return None
+
+    # The outermost detected lines are often one cell inside the real board edge.
+    # Expand outward by one estimated cell gap so the warp covers the full grid.
+    h_gap = (bottom - top) / (BOARD_SIZE - 1)
+    v_gap = (right - left) / (BOARD_SIZE - 1)
+    n_h_missing = (BOARD_SIZE - len(h_clusters)) / 2
+    n_v_missing = (BOARD_SIZE - len(v_clusters)) / 2
+    top = int(top - h_gap * max(n_h_missing, 0.5))
+    bottom = int(bottom + h_gap * max(n_h_missing, 0.5))
+    left = int(left - v_gap * max(n_v_missing, 0.5))
+    right = int(right + v_gap * max(n_v_missing, 0.5))
+
+    return np.array(
+        [[left, top], [right, top], [right, bottom], [left, bottom]],
+        dtype=np.float32,
+    )
+
+
 def warp_board(image, corners, output_size=IMAGE_SIZE):
     source = order_corners(corners)
     target = np.array(
@@ -82,57 +147,11 @@ def warp_board(image, corners, output_size=IMAGE_SIZE):
     return cv2.warpPerspective(image, matrix, (output_size, output_size))
 
 
-def _detect_aruco_markers(gray_frame):
-    aruco = getattr(cv2, "aruco", None)
-    if aruco is None:
-        return [], None
-    dictionary = aruco.getPredefinedDictionary(aruco.DICT_4X4_50)
-    if hasattr(aruco, "DetectorParameters"):
-        parameters = aruco.DetectorParameters()
-    else:
-        parameters = aruco.DetectorParameters_create()
-    if hasattr(aruco, "ArucoDetector"):
-        detector = aruco.ArucoDetector(dictionary, parameters)
-        corners, ids, _ = detector.detectMarkers(gray_frame)
-    else:
-        corners, ids, _ = aruco.detectMarkers(gray_frame, dictionary, parameters=parameters)
-    return corners, ids
-
-
-def detect_marker_corners(frame):
-    """Detect the 4 ArUco markers (IDs 0-3) placed at the board corners.
-
-    Returns a (4, 2) float32 array [TL, TR, BR, BL] using each marker's
-    inner-facing corner, or None if any marker is missing.
-    """
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    marker_corners_list, ids = _detect_aruco_markers(gray)
-    if ids is None:
-        return None
-
-    found = {}
-    for marker_corners, marker_id in zip(marker_corners_list, np.array(ids).reshape(-1)):
-        marker_id = int(marker_id)
-        if marker_id not in ARUCO_INNER_CORNER_INDEX:
-            continue
-        points = np.array(marker_corners[0], dtype=np.float32)
-        found[marker_id] = points[ARUCO_INNER_CORNER_INDEX[marker_id]]
-
-    if not all(mid in found for mid in ARUCO_MARKER_IDS):
-        return None
-
-    return np.array([found[0], found[1], found[2], found[3]], dtype=np.float32)
-
-
 def point_to_board_position(x, y, image_size):
     cell_gap = image_size / (BOARD_SIZE - 1)
     row = int(round(y / cell_gap))
     col = int(round(x / cell_gap))
-    return row, col
-
-
-def is_within_board(row, col):
-    return 0 <= row < BOARD_SIZE and 0 <= col < BOARD_SIZE
+    return max(0, min(BOARD_SIZE - 1, row)), max(0, min(BOARD_SIZE - 1, col))
 
 
 def is_near_grid_intersection(x, y, row, col, image_size):
@@ -157,7 +176,6 @@ def _classify_stone_color(board_image, x, y, radius):
 
 
 def find_stones(board_image):
-    """Detect stones using HoughCircles (shape-based, robust to hand false positives)."""
     image_size = board_image.shape[0]
     cell_gap = image_size / (BOARD_SIZE - 1)
     min_radius = int(cell_gap * 0.22)
@@ -186,12 +204,7 @@ def find_stones(board_image):
 
     for cx, cy, r in np.round(circles[0]).astype(int):
         row, col = point_to_board_position(cx, cy, image_size)
-        if not is_within_board(row, col):
-            continue
         if not is_near_grid_intersection(cx, cy, row, col, image_size):
-            continue
-        # Exclude the 4 corner 2x2 zones — magnetic board clips live there
-        if (row <= 1 or row >= BOARD_SIZE - 2) and (col <= 1 or col >= BOARD_SIZE - 2):
             continue
         color = _classify_stone_color(board_image, cx, cy, r)
         if color is None:

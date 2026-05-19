@@ -18,13 +18,11 @@ except ImportError:
     Picamera2 = None
 
 from arduino_feedback_client import ArduinoFeedbackClient
-from frame_stability import FrameStabilityChecker
-from gomoku_cv import compute_delta, detect_marker_corners, parse_corners, process_frame
+from gomoku_cv import auto_detect_corners, compute_delta, parse_corners, process_frame
 
 
 CAPTURE_INTERVAL_SECONDS = 1.0
 STABLE_FRAMES_REQUIRED = 3
-DIFF_THRESHOLD = 5.0
 ARDUINO_PORT = "/dev/ttyACM0"
 MQTT_BROKER = "172.20.10.3"
 MQTT_PORT = 1883
@@ -39,33 +37,12 @@ _mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
 _mqtt_success_code = getattr(mqtt, "MQTT_ERR_SUCCESS", 0)
 _mqtt_connected = False
 _move_number = 0
-_last_good_corners = None
-
-
-def resolve_board_corners(frame: np.ndarray, configured_corners):
-    global _last_good_corners
-
-    if configured_corners is not None:
-        corners = parse_corners(configured_corners) if isinstance(configured_corners, str) else configured_corners
-        _last_good_corners = np.array(corners, dtype=np.float32)
-        return _last_good_corners
-
-    detected_corners = detect_marker_corners(frame)
-    if detected_corners is not None:
-        _last_good_corners = np.array(detected_corners, dtype=np.float32)
-        return _last_good_corners
-
-    return _last_good_corners
 
 
 def run_cv_pipeline(frame: np.ndarray, board_corners):
     global _old_board
 
-    corners = resolve_board_corners(frame, board_corners)
-    if corners is None:
-        print("[Pipeline] No valid board corners detected - skipping frame.")
-        return None
-
+    corners = parse_corners(board_corners) if isinstance(board_corners, str) else board_corners
     board, _, result_image, _, _ = process_frame(frame, corners)
 
     cv2.imshow("Gomoku CV Preview", result_image)
@@ -73,7 +50,7 @@ def run_cv_pipeline(frame: np.ndarray, board_corners):
 
     changes = compute_delta(_old_board, board)
 
-    # Merge: only add stones, never remove confirmed ones (prevents flicker)
+    # Merge: only add stones, never remove confirmed ones (prevents re-detection flicker)
     merged = _old_board.copy()
     for r in range(15):
         for c in range(15):
@@ -125,12 +102,6 @@ def main():
         )
 
     camera = Picamera2()
-    config = camera.create_preview_configuration(main={"format": "RGB888", "size": (1280, 720)})
-    camera.configure(config)
-    stability = FrameStabilityChecker(
-        required_stable_frames=STABLE_FRAMES_REQUIRED,
-        diff_threshold=DIFF_THRESHOLD,
-    )
     arduino = ArduinoFeedbackClient(port=ARDUINO_PORT)
 
     arduino_ok = arduino.connect()
@@ -150,20 +121,43 @@ def main():
     time.sleep(2)
     print("[Pipeline] Started. Waiting for stable board frames...")
 
+    active_corners = parse_corners(BOARD_CORNERS) if BOARD_CORNERS else None
+    if active_corners is None:
+        print("[Pipeline] No BOARD_CORNERS set — attempting auto-detection from first frame...")
+        _seed_frame = camera.capture_array()
+        active_corners = auto_detect_corners(_seed_frame)
+        if active_corners is not None:
+            print(f"[Pipeline] Board corners auto-detected: {active_corners.tolist()}")
+        else:
+            print("[Pipeline] Auto-detection failed — running without perspective warp.")
+
+    consecutive_same = 0
+    last_board_state = _old_board.copy()
+    pending_move = None
+
     try:
         while True:
-            rgb_frame: np.ndarray = camera.capture_array()
-            raw_frame = cv2.cvtColor(rgb_frame, cv2.COLOR_RGB2BGR)
+            raw_frame: np.ndarray = camera.capture_array()
+            time.sleep(CAPTURE_INTERVAL_SECONDS)
 
-            if not stability.update(raw_frame):
-                time.sleep(CAPTURE_INTERVAL_SECONDS)
+            move = run_cv_pipeline(raw_frame, active_corners)
+            current_state = _old_board.copy()
+
+            if np.array_equal(current_state, last_board_state):
+                consecutive_same += 1
+            else:
+                # Board state changed — save the triggering move and start counting
+                consecutive_same = 1
+                last_board_state = current_state
+                if move is not None:
+                    pending_move = move
+
+            if consecutive_same < STABLE_FRAMES_REQUIRED or pending_move is None:
                 continue
 
-            stability.reset()
-            move = run_cv_pipeline(raw_frame, BOARD_CORNERS)
-            if move is None:
-                time.sleep(CAPTURE_INTERVAL_SECONDS)
-                continue
+            move = pending_move
+            pending_move = None
+            consecutive_same = 0
 
             print(f"[Pipeline] Move detected: {move}")
 
