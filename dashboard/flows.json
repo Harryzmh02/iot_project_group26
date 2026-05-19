@@ -1,5 +1,13 @@
 [
     {
+        "id": "6480c2de4d46e13b",
+        "type": "tab",
+        "label": "流程 1",
+        "disabled": false,
+        "info": "",
+        "env": []
+    },
+    {
         "id": "0fb6c417c00b04d3",
         "type": "tab",
         "label": "流程 1",
@@ -37,14 +45,6 @@
         "willMsg": {},
         "userProps": "",
         "sessionExpiry": ""
-    },
-    {
-        "id": "f12ed280f0f67996",
-        "type": "ui_tab",
-        "name": "Home",
-        "icon": "dashboard",
-        "disabled": false,
-        "hidden": false
     },
     {
         "id": "6f36d4f9b8b3080c",
@@ -144,6 +144,14 @@
         }
     },
     {
+        "id": "f12ed280f0f67996",
+        "type": "ui_tab",
+        "name": "Home",
+        "icon": "dashboard",
+        "disabled": false,
+        "hidden": false
+    },
+    {
         "id": "0ed992769374b190",
         "type": "ui_group",
         "name": "Game Status",
@@ -238,27 +246,6 @@
         ]
     },
     {
-        "id": "69c949219f014da0",
-        "type": "ui_text",
-        "z": "0fb6c417c00b04d3",
-        "group": "0ed992769374b190",
-        "order": 0,
-        "width": 0,
-        "height": 0,
-        "name": "",
-        "label": "Player",
-        "format": "{{msg.payload}}",
-        "layout": "row-spread",
-        "className": "",
-        "style": false,
-        "font": "",
-        "fontSize": 16,
-        "color": "#000000",
-        "x": 610,
-        "y": 300,
-        "wires": []
-    },
-    {
         "id": "1dfa9277613bb38d",
         "type": "function",
         "z": "0fb6c417c00b04d3",
@@ -279,27 +266,6 @@
         ]
     },
     {
-        "id": "aed7976ee3aed12c",
-        "type": "ui_text",
-        "z": "0fb6c417c00b04d3",
-        "group": "0ed992769374b190",
-        "order": 0,
-        "width": 0,
-        "height": 0,
-        "name": "",
-        "label": "step",
-        "format": "{{msg.payload}}",
-        "layout": "row-spread",
-        "className": "",
-        "style": false,
-        "font": "",
-        "fontSize": 16,
-        "color": "#000000",
-        "x": 630,
-        "y": 380,
-        "wires": []
-    },
-    {
         "id": "0910525b53d51de3",
         "type": "function",
         "z": "0fb6c417c00b04d3",
@@ -318,27 +284,6 @@
                 "6ff91391fbe8ee72"
             ]
         ]
-    },
-    {
-        "id": "6ff91391fbe8ee72",
-        "type": "ui_text",
-        "z": "0fb6c417c00b04d3",
-        "group": "0ed992769374b190",
-        "order": 0,
-        "width": 0,
-        "height": 0,
-        "name": "",
-        "label": "Position",
-        "format": "{{msg.payload}}",
-        "layout": "row-spread",
-        "className": "",
-        "style": false,
-        "font": "",
-        "fontSize": 16,
-        "color": "#000000",
-        "x": 660,
-        "y": 460,
-        "wires": []
     },
     {
         "id": "1e999f8c13397435",
@@ -364,27 +309,6 @@
         ]
     },
     {
-        "id": "18b5fc5996b94eef",
-        "type": "ui_template",
-        "z": "0fb6c417c00b04d3",
-        "group": "7b301a6c6054650d",
-        "name": "",
-        "order": 3,
-        "width": 0,
-        "height": 0,
-        "format": "<style>\n    .gomoku-wrapper {\n        width: 100%;\n        overflow: hidden;\n        padding: 10px;\n    }\n\n    .gomoku-board {\n        position: relative;\n        width: 330px;\n        height: 330px;\n        background-color: #d9a441;\n        border: 2px solid #5c3a00;\n        box-sizing: border-box;\n    }\n\n    .board-line {\n        position: absolute;\n        background: #5c3a00;\n    }\n\n    .horizontal {\n        height: 1px;\n        width: 252px;\n        left: 39px;\n    }\n\n    .vertical {\n        width: 1px;\n        height: 252px;\n        top: 39px;\n    }\n\n    .stone {\n        position: absolute;\n        width: 15px;\n        height: 15px;\n        border-radius: 50%;\n        transform: translate(-50%, -50%);\n        z-index: 10;\n    }\n\n    .black-stone {\n        background: black;\n    }\n\n    .white-stone {\n        background: white;\n        border: 1px solid black;\n    }\n</style>\n\n<div class=\"gomoku-wrapper\">\n    <div class=\"gomoku-board\">\n\n        <div ng-repeat=\"n in [].constructor(15) track by $index\" class=\"board-line horizontal\"\n            ng-style=\"{ top: (39 + $index * 18) + 'px' }\">\n        </div>\n\n        <div ng-repeat=\"n in [].constructor(15) track by $index\" class=\"board-line vertical\"\n            ng-style=\"{ left: (39 + $index * 18) + 'px' }\">\n        </div>\n\n        <div ng-repeat=\"stone in msg.payload track by $index\" class=\"stone\" ng-class=\"{\n                'black-stone': stone.player === 'black',\n                'white-stone': stone.player === 'white'\n             }\" ng-style=\"{\n                left: (39 + (stone.col - 1) * 18) + 'px',\n                top: (39 + (stone.row - 1) * 18) + 'px'\n             }\">\n        </div>\n\n    </div>\n</div>",
-        "storeOutMessages": true,
-        "fwdInMessages": true,
-        "resendOnRefresh": true,
-        "templateScope": "local",
-        "className": "",
-        "x": 640,
-        "y": 260,
-        "wires": [
-            []
-        ]
-    },
-    {
         "id": "4aaa3e7fc681a9ba",
         "type": "function",
         "z": "0fb6c417c00b04d3",
@@ -401,55 +325,6 @@
         "wires": [
             [
                 "78400b6dba5a7627"
-            ]
-        ]
-    },
-    {
-        "id": "78400b6dba5a7627",
-        "type": "ui_template",
-        "z": "0fb6c417c00b04d3",
-        "group": "22822d46f84977a1",
-        "name": "",
-        "order": 3,
-        "width": 0,
-        "height": 0,
-        "format": "<div ng-bind-html=\"msg.payload\"></div>",
-        "storeOutMessages": true,
-        "fwdInMessages": true,
-        "resendOnRefresh": true,
-        "templateScope": "local",
-        "className": "",
-        "x": 660,
-        "y": 580,
-        "wires": [
-            []
-        ]
-    },
-    {
-        "id": "f8e11ce20e80a040",
-        "type": "ui_button",
-        "z": "0fb6c417c00b04d3",
-        "name": "Reset Game",
-        "group": "0ed992769374b190",
-        "order": 3,
-        "width": 0,
-        "height": 0,
-        "passthru": false,
-        "label": "Reset Game",
-        "tooltip": "",
-        "color": "",
-        "bgcolor": "",
-        "className": "",
-        "icon": "",
-        "payload": "",
-        "payloadType": "str",
-        "topic": "topic",
-        "topicType": "msg",
-        "x": 150,
-        "y": 700,
-        "wires": [
-            [
-                "fc0de2cc6c206759"
             ]
         ]
     },
@@ -489,6 +364,97 @@
         ]
     },
     {
+        "id": "f8e11ce20e80a040",
+        "type": "ui_button",
+        "z": "0fb6c417c00b04d3",
+        "name": "Reset Game",
+        "group": "0ed992769374b190",
+        "order": 3,
+        "width": 0,
+        "height": 0,
+        "passthru": false,
+        "label": "Reset Game",
+        "tooltip": "",
+        "color": "",
+        "bgcolor": "",
+        "className": "",
+        "icon": "",
+        "payload": "",
+        "payloadType": "str",
+        "topic": "topic",
+        "topicType": "msg",
+        "x": 150,
+        "y": 700,
+        "wires": [
+            [
+                "fc0de2cc6c206759"
+            ]
+        ]
+    },
+    {
+        "id": "69c949219f014da0",
+        "type": "ui_text",
+        "z": "0fb6c417c00b04d3",
+        "group": "0ed992769374b190",
+        "order": 0,
+        "width": 0,
+        "height": 0,
+        "name": "",
+        "label": "Player",
+        "format": "{{msg.payload}}",
+        "layout": "row-spread",
+        "className": "",
+        "style": false,
+        "font": "",
+        "fontSize": 16,
+        "color": "#000000",
+        "x": 610,
+        "y": 300,
+        "wires": []
+    },
+    {
+        "id": "aed7976ee3aed12c",
+        "type": "ui_text",
+        "z": "0fb6c417c00b04d3",
+        "group": "0ed992769374b190",
+        "order": 0,
+        "width": 0,
+        "height": 0,
+        "name": "",
+        "label": "step",
+        "format": "{{msg.payload}}",
+        "layout": "row-spread",
+        "className": "",
+        "style": false,
+        "font": "",
+        "fontSize": 16,
+        "color": "#000000",
+        "x": 630,
+        "y": 380,
+        "wires": []
+    },
+    {
+        "id": "6ff91391fbe8ee72",
+        "type": "ui_text",
+        "z": "0fb6c417c00b04d3",
+        "group": "0ed992769374b190",
+        "order": 0,
+        "width": 0,
+        "height": 0,
+        "name": "",
+        "label": "Position",
+        "format": "{{msg.payload}}",
+        "layout": "row-spread",
+        "className": "",
+        "style": false,
+        "font": "",
+        "fontSize": 16,
+        "color": "#000000",
+        "x": 660,
+        "y": 460,
+        "wires": []
+    },
+    {
         "id": "77e9d13125cfe53d",
         "type": "ui_text",
         "z": "0fb6c417c00b04d3",
@@ -510,7 +476,49 @@
         "wires": []
     },
     {
-        "id": "123e06202f7bc307",
+        "id": "18b5fc5996b94eef",
+        "type": "ui_template",
+        "z": "0fb6c417c00b04d3",
+        "group": "7b301a6c6054650d",
+        "name": "",
+        "order": 3,
+        "width": 0,
+        "height": 0,
+        "format": "<style>\n.gomoku-wrapper {\n    width: 100%;\n    overflow: hidden;\n    padding: 10px;\n}\n\n.gomoku-board {\n    position: relative;\n    width: 330px;\n    height: 330px;\n    background-color: #d9a441;\n    border: 2px solid #5c3a00;\n    box-sizing: border-box;\n}\n\n.board-line {\n    position: absolute;\n    background: #5c3a00;\n}\n\n.horizontal {\n    height: 1px;\n    width: 240px;\n    left: 45px;\n}\n\n.vertical {\n    width: 1px;\n    height: 240px;\n    top: 45px;\n}\n\n.stone {\n    position: absolute;\n    width: 15px;\n    height: 15px;\n    border-radius: 50%;\n    transform: translate(-50%, -50%);\n    z-index: 10;\n}\n\n.black-stone {\n    background: black;\n}\n\n.white-stone {\n    background: white;\n    border: 1px solid black;\n}\n</style>\n\n<div class=\"gomoku-wrapper\">\n    <div class=\"gomoku-board\">\n\n        <div ng-repeat=\"n in [].constructor(13) track by $index\"\n             class=\"board-line horizontal\"\n             ng-style=\"{ top: (45 + $index * 20) + 'px' }\">\n        </div>\n\n        <div ng-repeat=\"n in [].constructor(13) track by $index\"\n             class=\"board-line vertical\"\n             ng-style=\"{ left: (45 + $index * 20) + 'px' }\">\n        </div>\n\n        <div ng-repeat=\"stone in msg.payload track by $index\"\n             class=\"stone\"\n             ng-class=\"{\n                'black-stone': stone.player === 'black',\n                'white-stone': stone.player === 'white'\n             }\"\n             ng-style=\"{\n                left: (45 + (stone.col - 1) * 20) + 'px',\n                top: (45 + (stone.row - 1) * 20) + 'px'\n             }\">\n        </div>\n\n    </div>\n</div>",
+        "storeOutMessages": true,
+        "fwdInMessages": true,
+        "resendOnRefresh": true,
+        "templateScope": "local",
+        "className": "",
+        "x": 640,
+        "y": 260,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "78400b6dba5a7627",
+        "type": "ui_template",
+        "z": "0fb6c417c00b04d3",
+        "group": "22822d46f84977a1",
+        "name": "",
+        "order": 3,
+        "width": 0,
+        "height": 0,
+        "format": "<div ng-bind-html=\"msg.payload\"></div>",
+        "storeOutMessages": true,
+        "fwdInMessages": true,
+        "resendOnRefresh": true,
+        "templateScope": "local",
+        "className": "",
+        "x": 660,
+        "y": 580,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "1766c79bb2eefa61",
         "type": "global-config",
         "env": [],
         "modules": {
