@@ -50,10 +50,13 @@ sys.modules.setdefault("serial", serial_mod)
 cv2_mod = types.ModuleType("cv2")
 sys.modules.setdefault("cv2", cv2_mod)
 
+DUMMY_CORNERS = np.array([(10, 10), (90, 10), (90, 90), (10, 90)], dtype=np.float32)
+
 gomoku_cv_mod = types.ModuleType("gomoku_cv")
 gomoku_cv_mod.process_frame  = lambda frame, corners: (np.zeros((15, 15), dtype=np.uint8), [], None, None, None)
 gomoku_cv_mod.compute_delta  = lambda old, new: []
-gomoku_cv_mod.parse_corners  = lambda s: None
+gomoku_cv_mod.parse_corners  = lambda s: DUMMY_CORNERS
+gomoku_cv_mod.detect_marker_corners = lambda frame: DUMMY_CORNERS
 sys.modules.setdefault("gomoku_cv", gomoku_cv_mod)
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'app'))
@@ -67,6 +70,8 @@ import main_pipeline
 # already-imported main_pipeline module object).
 _orig_process_frame = main_pipeline.process_frame
 _orig_compute_delta = main_pipeline.compute_delta
+_orig_parse_corners = main_pipeline.parse_corners
+_orig_detect_marker_corners = main_pipeline.detect_marker_corners
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -75,9 +80,12 @@ def reset_state():
     main_pipeline._old_board = np.zeros((15, 15), dtype=np.uint8)
     main_pipeline._mqtt_connected = True
     main_pipeline._move_number = 0
+    main_pipeline._last_good_corners = None
     # Restore any monkey-patches applied by previous tests.
     main_pipeline.process_frame = _orig_process_frame
     main_pipeline.compute_delta = _orig_compute_delta
+    main_pipeline.parse_corners = _orig_parse_corners
+    main_pipeline.detect_marker_corners = _orig_detect_marker_corners
 
 
 def board_with_stone(row, col, color=1):
@@ -110,6 +118,18 @@ def test_cv_returns_none_when_board_unchanged():
 
     assert main_pipeline.run_cv_pipeline(frame, None) is None
     print("PASS: returns None when no change detected")
+
+
+def test_cv_returns_none_without_any_board_corners():
+    reset_state()
+    frame = np.zeros((800, 800, 3), dtype=np.uint8)
+    main_pipeline.detect_marker_corners = lambda f: None
+    main_pipeline.process_frame = lambda *args, **kwargs: (_ for _ in ()).throw(
+        AssertionError("process_frame should not be called without valid corners")
+    )
+
+    assert main_pipeline.run_cv_pipeline(frame, None) is None
+    print("PASS: returns None when no configured or detected board corners are available")
 
 
 def test_cv_detects_black_stone():
@@ -175,6 +195,83 @@ def test_cv_updates_old_board_after_move():
     main_pipeline.run_cv_pipeline(frame, None)
     assert main_pipeline._old_board[4, 4] == 1
     print("PASS: _old_board updated after move so next delta is correct")
+
+
+def test_cv_uses_detected_marker_corners():
+    reset_state()
+    frame = np.zeros((800, 800, 3), dtype=np.uint8)
+    detected_corners = np.array([(20, 20), (80, 20), (80, 80), (20, 80)], dtype=np.float32)
+    captured = {}
+
+    main_pipeline.detect_marker_corners = lambda f: detected_corners
+    main_pipeline.process_frame = lambda f, c: (
+        captured.__setitem__("corners", np.array(c, dtype=np.float32)) or board_with_stone(7, 7, 1),
+        [],
+        None,
+        None,
+        None,
+    )
+    main_pipeline.compute_delta = lambda old, new: [
+        {"type": "new_move", "row": 7, "col": 7, "color": "black"}
+    ]
+
+    result = main_pipeline.run_cv_pipeline(frame, None)
+    assert result == {"player": "black", "row": 7, "col": 7}
+    assert np.array_equal(captured["corners"], detected_corners)
+    assert np.array_equal(main_pipeline._last_good_corners, detected_corners)
+    print("PASS: detected marker corners are forwarded into process_frame")
+
+
+def test_cv_reuses_last_good_corners_when_marker_detection_drops_out():
+    reset_state()
+    frame = np.zeros((800, 800, 3), dtype=np.uint8)
+    cached_corners = np.array([(30, 30), (70, 30), (70, 70), (30, 70)], dtype=np.float32)
+    captured = {}
+
+    main_pipeline._last_good_corners = cached_corners.copy()
+    main_pipeline.detect_marker_corners = lambda f: None
+    main_pipeline.process_frame = lambda f, c: (
+        captured.__setitem__("corners", np.array(c, dtype=np.float32)) or board_with_stone(2, 2, 2),
+        [],
+        None,
+        None,
+        None,
+    )
+    main_pipeline.compute_delta = lambda old, new: [
+        {"type": "new_move", "row": 2, "col": 2, "color": "white"}
+    ]
+
+    result = main_pipeline.run_cv_pipeline(frame, None)
+    assert result == {"player": "white", "row": 2, "col": 2}
+    assert np.array_equal(captured["corners"], cached_corners)
+    print("PASS: last successful board corners are reused when marker detection temporarily fails")
+
+
+def test_cv_prefers_configured_corners_over_marker_detection():
+    reset_state()
+    frame = np.zeros((800, 800, 3), dtype=np.uint8)
+    configured_corners = np.array([(11, 11), (89, 11), (89, 89), (11, 89)], dtype=np.float32)
+    captured = {}
+
+    main_pipeline.parse_corners = lambda text: configured_corners
+    main_pipeline.detect_marker_corners = lambda f: (_ for _ in ()).throw(
+        AssertionError("detect_marker_corners should not run when BOARD_CORNERS is configured")
+    )
+    main_pipeline.process_frame = lambda f, c: (
+        captured.__setitem__("corners", np.array(c, dtype=np.float32)) or board_with_stone(6, 6, 1),
+        [],
+        None,
+        None,
+        None,
+    )
+    main_pipeline.compute_delta = lambda old, new: [
+        {"type": "new_move", "row": 6, "col": 6, "color": "black"}
+    ]
+
+    result = main_pipeline.run_cv_pipeline(frame, "dummy-configured-corners")
+    assert result == {"player": "black", "row": 6, "col": 6}
+    assert np.array_equal(captured["corners"], configured_corners)
+    print("PASS: configured corners take priority over automatic marker detection")
 
 
 # ── MQTT publish tests ────────────────────────────────────────────────────────
@@ -289,11 +386,15 @@ def test_board_corners_defaults_to_none():
 
 if __name__ == "__main__":
     test_cv_returns_none_when_board_unchanged()
+    test_cv_returns_none_without_any_board_corners()
     test_cv_detects_black_stone()
     test_cv_detects_white_stone()
     test_cv_rejects_multiple_new_stones()
     test_cv_rejects_uncertain_change()
     test_cv_updates_old_board_after_move()
+    test_cv_uses_detected_marker_corners()
+    test_cv_reuses_last_good_corners_when_marker_detection_drops_out()
+    test_cv_prefers_configured_corners_over_marker_detection()
     test_publish_move_payload_format()
     test_publish_move_skips_when_not_connected()
     test_publish_move_failure_does_not_increment_counter()

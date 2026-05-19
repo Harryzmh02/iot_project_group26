@@ -49,10 +49,13 @@ sys.modules.setdefault("serial", serial_mod)
 cv2_mod = types.ModuleType("cv2")
 sys.modules.setdefault("cv2", cv2_mod)
 
+DUMMY_CORNERS = np.array([(10, 10), (90, 10), (90, 90), (10, 90)], dtype=np.float32)
+
 gomoku_cv_mod = types.ModuleType("gomoku_cv")
 gomoku_cv_mod.process_frame  = lambda frame, corners: (np.zeros((15, 15), dtype=np.uint8), [], None, None, None)
 gomoku_cv_mod.compute_delta  = lambda old, new: []
 gomoku_cv_mod.parse_corners  = lambda s: None
+gomoku_cv_mod.detect_marker_corners = lambda frame: DUMMY_CORNERS
 sys.modules.setdefault("gomoku_cv", gomoku_cv_mod)
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'app'))
@@ -93,8 +96,10 @@ def test_pipeline_cv_returns_none_for_empty_board():
         main_pipeline.process_frame = gomoku_cv_stub.process_frame
         main_pipeline.compute_delta = gomoku_cv_stub.compute_delta
         main_pipeline.parse_corners = gomoku_cv_stub.parse_corners
+        main_pipeline.detect_marker_corners = gomoku_cv_stub.detect_marker_corners
 
     main_pipeline._old_board = np.zeros((15, 15), dtype=np.uint8)
+    main_pipeline._last_good_corners = None
     dummy_frame = np.zeros((800, 800, 3), dtype=np.uint8)
     result = main_pipeline.run_cv_pipeline(dummy_frame, board_corners=None)
     assert result is None, "run_cv_pipeline should return None when no new move detected"
