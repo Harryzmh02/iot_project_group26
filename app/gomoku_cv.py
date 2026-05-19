@@ -65,6 +65,67 @@ def parse_corners(corner_text):
     return order_corners(points)
 
 
+def _cluster_lines(positions, gap):
+    """Merge line positions that are within gap pixels of each other."""
+    if not positions:
+        return []
+    sorted_pos = sorted(positions)
+    clusters = [[sorted_pos[0]]]
+    for p in sorted_pos[1:]:
+        if p - clusters[-1][-1] < gap:
+            clusters[-1].append(p)
+        else:
+            clusters.append([p])
+    return [int(np.mean(c)) for c in clusters]
+
+
+def auto_detect_corners(image):
+    """Detect board corners automatically using Hough line transform.
+
+    Returns a (4, 2) float32 array [TL, TR, BR, BL], or None if detection fails.
+    """
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+    edges = cv2.Canny(blurred, 30, 100)
+
+    h, w = image.shape[:2]
+    min_line_len = int(min(h, w) * 0.15)
+    lines = cv2.HoughLinesP(
+        edges, 1, np.pi / 180,
+        threshold=60,
+        minLineLength=min_line_len,
+        maxLineGap=20,
+    )
+    if lines is None:
+        return None
+
+    h_positions, v_positions = [], []
+    for x1, y1, x2, y2 in lines[:, 0]:
+        angle = abs(np.degrees(np.arctan2(y2 - y1, x2 - x1)))
+        if angle < 20 or angle > 160:
+            h_positions.append((y1 + y2) / 2)
+        elif 70 < angle < 110:
+            v_positions.append((x1 + x2) / 2)
+
+    cluster_gap = min(h, w) * 0.04
+    h_clusters = _cluster_lines(h_positions, cluster_gap)
+    v_clusters = _cluster_lines(v_positions, cluster_gap)
+
+    if len(h_clusters) < 2 or len(v_clusters) < 2:
+        return None
+
+    top, bottom = h_clusters[0], h_clusters[-1]
+    left, right = v_clusters[0], v_clusters[-1]
+
+    if bottom - top < min(h, w) * 0.3 or right - left < min(h, w) * 0.3:
+        return None
+
+    return np.array(
+        [[left, top], [right, top], [right, bottom], [left, bottom]],
+        dtype=np.float32,
+    )
+
+
 def warp_board(image, corners, output_size=IMAGE_SIZE):
     source = order_corners(corners)
     target = np.array(

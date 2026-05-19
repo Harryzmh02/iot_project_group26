@@ -18,7 +18,7 @@ except ImportError:
 
 from arduino_feedback_client import ArduinoFeedbackClient
 from frame_stability import FrameStabilityChecker
-from gomoku_cv import compute_delta, parse_corners, process_frame
+from gomoku_cv import auto_detect_corners, compute_delta, parse_corners, process_frame
 
 
 CAPTURE_INTERVAL_SECONDS = 1.0
@@ -115,6 +115,16 @@ def main():
     time.sleep(2)
     print("[Pipeline] Started. Waiting for stable board frames...")
 
+    active_corners = parse_corners(BOARD_CORNERS) if BOARD_CORNERS else None
+    if active_corners is None:
+        print("[Pipeline] No BOARD_CORNERS set — attempting auto-detection from first frame...")
+        _seed_frame = camera.capture_array()
+        active_corners = auto_detect_corners(_seed_frame)
+        if active_corners is not None:
+            print(f"[Pipeline] Board corners auto-detected: {active_corners.tolist()}")
+        else:
+            print("[Pipeline] Auto-detection failed — running without perspective warp.")
+
     try:
         while True:
             raw_frame: np.ndarray = camera.capture_array()
@@ -124,7 +134,7 @@ def main():
                 continue
 
             stability.reset()
-            move = run_cv_pipeline(raw_frame, BOARD_CORNERS)
+            move = run_cv_pipeline(raw_frame, active_corners)
             if move is None:
                 time.sleep(CAPTURE_INTERVAL_SECONDS)
                 continue
