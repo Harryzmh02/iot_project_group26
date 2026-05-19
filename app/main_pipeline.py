@@ -24,7 +24,7 @@ from gomoku_cv import auto_detect_corners, compute_delta, parse_corners, process
 CAPTURE_INTERVAL_SECONDS = 1.0
 STABLE_FRAMES_REQUIRED = 3
 ARDUINO_PORT = "/dev/ttyACM0"
-MQTT_BROKER = "localhost"
+MQTT_BROKER = "172.20.10.3"
 MQTT_PORT = 1883
 MQTT_TOPIC = "gomoku/move"
 
@@ -59,7 +59,7 @@ def run_cv_pipeline(frame: np.ndarray, board_corners):
     _old_board = merged
 
     new_moves = [change for change in changes if change["type"] == "new_move"]
-    if len(new_moves) != 1 or len(changes) != len(new_moves):
+    if len(new_moves) != 1:
         return None
 
     move = new_moves[0]
