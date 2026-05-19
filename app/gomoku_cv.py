@@ -23,6 +23,14 @@ IMAGE_SIZE = 800
 EMPTY = 0
 BLACK = 1
 WHITE = 2
+ARUCO_MARKER_IDS = (0, 1, 2, 3)
+# Use the marker corner that faces the playable board area.
+ARUCO_INNER_CORNER_INDEX = {
+    0: 2,  # top-left marker -> bottom-right corner
+    1: 3,  # top-right marker -> bottom-left corner
+    2: 0,  # bottom-right marker -> top-left corner
+    3: 1,  # bottom-left marker -> top-right corner
+}
 
 
 @dataclass
@@ -73,6 +81,55 @@ def warp_board(image, corners, output_size=IMAGE_SIZE):
     )
     matrix = cv2.getPerspectiveTransform(source, target)
     return cv2.warpPerspective(image, matrix, (output_size, output_size))
+
+
+def _detect_aruco_markers(gray_frame):
+    aruco = getattr(cv2, "aruco", None)
+    if aruco is None:
+        return [], None
+
+    dictionary = aruco.getPredefinedDictionary(aruco.DICT_4X4_50)
+    if hasattr(aruco, "DetectorParameters"):
+        parameters = aruco.DetectorParameters()
+    else:
+        parameters = aruco.DetectorParameters_create()
+
+    if hasattr(aruco, "ArucoDetector"):
+        detector = aruco.ArucoDetector(dictionary, parameters)
+        corners, ids, _ = detector.detectMarkers(gray_frame)
+    else:
+        corners, ids, _ = aruco.detectMarkers(gray_frame, dictionary, parameters=parameters)
+
+    return corners, ids
+
+
+def detect_marker_corners(frame):
+    """
+    Detect four ArUco markers around the board and return board corners as:
+    [top-left, top-right, bottom-right, bottom-left].
+
+    Returns None when the ArUco module is unavailable or not all four required
+    markers (IDs 0, 1, 2, 3) are visible in the frame.
+    """
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    marker_corners_list, ids = _detect_aruco_markers(gray)
+    if ids is None:
+        return None
+
+    found = {}
+    for marker_corners, marker_id in zip(marker_corners_list, np.array(ids).reshape(-1)):
+        marker_id = int(marker_id)
+        if marker_id not in ARUCO_INNER_CORNER_INDEX:
+            continue
+
+        points = np.array(marker_corners[0], dtype=np.float32)
+        point_index = ARUCO_INNER_CORNER_INDEX[marker_id]
+        found[marker_id] = points[point_index]
+
+    if not all(marker_id in found for marker_id in ARUCO_MARKER_IDS):
+        return None
+
+    return np.array([found[0], found[1], found[2], found[3]], dtype=np.float32)
 
 
 def point_to_board_position(x, y, image_size):
