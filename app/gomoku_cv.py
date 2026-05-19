@@ -23,6 +23,14 @@ IMAGE_SIZE = 800
 EMPTY = 0
 BLACK = 1
 WHITE = 2
+ARUCO_MARKER_IDS = (0, 1, 2, 3)
+# The corner of each marker that faces the playable board area.
+ARUCO_INNER_CORNER_INDEX = {
+    0: 2,  # top-left marker → bottom-right corner
+    1: 3,  # top-right marker → bottom-left corner
+    2: 0,  # bottom-right marker → top-left corner
+    3: 1,  # bottom-left marker → top-right corner
+}
 
 
 @dataclass
@@ -63,6 +71,49 @@ def parse_corners(corner_text):
         raise ValueError("Corners must contain 8 numbers: x1,y1,x2,y2,x3,y3,x4,y4")
     points = [(values[i], values[i + 1]) for i in range(0, 8, 2)]
     return order_corners(points)
+
+
+def _detect_aruco_markers(gray_frame):
+    aruco = getattr(cv2, "aruco", None)
+    if aruco is None:
+        return [], None
+    dictionary = aruco.getPredefinedDictionary(aruco.DICT_4X4_50)
+    if hasattr(aruco, "DetectorParameters"):
+        parameters = aruco.DetectorParameters()
+    else:
+        parameters = aruco.DetectorParameters_create()
+    if hasattr(aruco, "ArucoDetector"):
+        detector = aruco.ArucoDetector(dictionary, parameters)
+        corners, ids, _ = detector.detectMarkers(gray_frame)
+    else:
+        corners, ids, _ = aruco.detectMarkers(gray_frame, dictionary, parameters=parameters)
+    return corners, ids
+
+
+def detect_marker_corners(frame):
+    """Detect the 4 ArUco markers (IDs 0-3) placed at the board corners.
+
+    Returns a (4, 2) float32 array [TL, TR, BR, BL] using each marker's
+    inner-facing corner, or None if any marker is missing or the ArUco
+    module is unavailable.
+    """
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    marker_corners_list, ids = _detect_aruco_markers(gray)
+    if ids is None:
+        return None
+
+    found = {}
+    for marker_corners, marker_id in zip(marker_corners_list, np.array(ids).reshape(-1)):
+        marker_id = int(marker_id)
+        if marker_id not in ARUCO_INNER_CORNER_INDEX:
+            continue
+        points = np.array(marker_corners[0], dtype=np.float32)
+        found[marker_id] = points[ARUCO_INNER_CORNER_INDEX[marker_id]]
+
+    if not all(mid in found for mid in ARUCO_MARKER_IDS):
+        return None
+
+    return np.array([found[0], found[1], found[2], found[3]], dtype=np.float32)
 
 
 def _cluster_lines(positions, gap):
