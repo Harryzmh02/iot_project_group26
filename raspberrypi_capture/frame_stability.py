@@ -15,6 +15,15 @@ class FrameStabilityChecker:
         self.diff_threshold = diff_threshold
         self._prev_frame: np.ndarray | None = None
         self._stable_count: int = 0
+        self.last_diff: float | None = None
+
+    def _compact_frame(self, frame: np.ndarray) -> np.ndarray:
+        """Small grayscale frame keeps hand-motion checks cheap on Pi 3."""
+        if frame.ndim == 3:
+            frame = frame.mean(axis=2)
+        step_y = max(1, frame.shape[0] // 120)
+        step_x = max(1, frame.shape[1] // 160)
+        return frame[::step_y, ::step_x].astype(np.float32)
 
     def update(self, frame: np.ndarray) -> bool:
         """
@@ -22,12 +31,15 @@ class FrameStabilityChecker:
         to trigger board state processing.
         """
         if self._prev_frame is None:
-            self._prev_frame = frame.astype(np.float32)
+            self._prev_frame = self._compact_frame(frame)
             self._stable_count = 0
+            self.last_diff = None
             return False
 
-        diff = np.mean(np.abs(frame.astype(np.float32) - self._prev_frame))
-        self._prev_frame = frame.astype(np.float32)
+        compact = self._compact_frame(frame)
+        diff = np.mean(np.abs(compact - self._prev_frame))
+        self._prev_frame = compact
+        self.last_diff = float(diff)
 
         if diff < self.diff_threshold:
             self._stable_count += 1

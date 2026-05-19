@@ -89,7 +89,7 @@ def test_publish_move_converts_row_col_to_one_indexed():
     _, data = published_messages[0]
     assert data["row"] == 1,    f"Expected row=1, got {data['row']}"
     assert data["column"] == 1, f"Expected column=1, got {data['column']}"
-    print("PASS: (0,0) in CV → row=1, column=1 in MQTT payload")
+    print("PASS: (0,0) in CV -> row=1, column=1 in MQTT payload")
 
 
 def test_publish_move_boundary_14_14():
@@ -99,7 +99,7 @@ def test_publish_move_boundary_14_14():
     _, data = published_messages[0]
     assert data["row"] == 15,    f"Expected row=15, got {data['row']}"
     assert data["column"] == 15, f"Expected column=15, got {data['column']}"
-    print("PASS: (14,14) in CV → row=15, column=15 in MQTT payload (board boundary)")
+    print("PASS: (14,14) in CV -> row=15, column=15 in MQTT payload (board boundary)")
 
 
 def test_publish_move_field_name_is_column_not_col():
