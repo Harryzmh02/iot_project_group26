@@ -49,7 +49,14 @@ def run_cv_pipeline(frame: np.ndarray, board_corners):
     cv2.waitKey(1)
 
     changes = compute_delta(_old_board, board)
-    _old_board = board.copy()
+
+    # Merge: only add stones, never remove confirmed ones (prevents re-detection flicker)
+    merged = _old_board.copy()
+    for r in range(15):
+        for c in range(15):
+            if board[r, c] != 0:
+                merged[r, c] = board[r, c]
+    _old_board = merged
 
     new_moves = [change for change in changes if change["type"] == "new_move"]
     if len(new_moves) != 1 or len(changes) != len(new_moves):

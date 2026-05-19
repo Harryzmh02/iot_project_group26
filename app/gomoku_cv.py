@@ -158,7 +158,7 @@ def is_near_grid_intersection(x, y, row, col, image_size):
     cell_gap = image_size / (BOARD_SIZE - 1)
     expected_x = col * cell_gap
     expected_y = row * cell_gap
-    return np.hypot(x - expected_x, y - expected_y) <= cell_gap * 0.38
+    return np.hypot(x - expected_x, y - expected_y) <= cell_gap * 0.50
 
 
 def _classify_stone_color(board_image, x, y, radius):
