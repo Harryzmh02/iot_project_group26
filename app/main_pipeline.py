@@ -8,6 +8,7 @@ import json
 import time
 from datetime import datetime
 
+import cv2
 import numpy as np
 import paho.mqtt.client as mqtt
 
@@ -18,7 +19,7 @@ except ImportError:
 
 from arduino_feedback_client import ArduinoFeedbackClient
 from frame_stability import FrameStabilityChecker
-from gomoku_cv import compute_delta, parse_corners, process_frame
+from gomoku_cv import compute_delta, detect_marker_corners, parse_corners, process_frame
 
 
 CAPTURE_INTERVAL_SECONDS = 1.0
@@ -38,12 +39,33 @@ _mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
 _mqtt_success_code = getattr(mqtt, "MQTT_ERR_SUCCESS", 0)
 _mqtt_connected = False
 _move_number = 0
+_last_good_corners = None
+
+
+def resolve_board_corners(frame: np.ndarray, configured_corners):
+    global _last_good_corners
+
+    if configured_corners is not None:
+        corners = parse_corners(configured_corners) if isinstance(configured_corners, str) else configured_corners
+        _last_good_corners = np.array(corners, dtype=np.float32)
+        return _last_good_corners
+
+    detected_corners = detect_marker_corners(frame)
+    if detected_corners is not None:
+        _last_good_corners = np.array(detected_corners, dtype=np.float32)
+        return _last_good_corners
+
+    return _last_good_corners
 
 
 def run_cv_pipeline(frame: np.ndarray, board_corners):
     global _old_board
 
-    corners = parse_corners(board_corners) if isinstance(board_corners, str) else board_corners
+    corners = resolve_board_corners(frame, board_corners)
+    if corners is None:
+        print("[Pipeline] No valid board corners detected - skipping frame.")
+        return None
+
     board, _, _, _, _ = process_frame(frame, corners)
     changes = compute_delta(_old_board, board)
     _old_board = board.copy()
@@ -92,6 +114,8 @@ def main():
         )
 
     camera = Picamera2()
+    config = camera.create_preview_configuration(main={"format": "RGB888", "size": (1280, 720)})
+    camera.configure(config)
     stability = FrameStabilityChecker(
         required_stable_frames=STABLE_FRAMES_REQUIRED,
         diff_threshold=DIFF_THRESHOLD,
@@ -117,7 +141,8 @@ def main():
 
     try:
         while True:
-            raw_frame: np.ndarray = camera.capture_array()
+            rgb_frame: np.ndarray = camera.capture_array()
+            raw_frame = cv2.cvtColor(rgb_frame, cv2.COLOR_RGB2BGR)
 
             if not stability.update(raw_frame):
                 time.sleep(CAPTURE_INTERVAL_SECONDS)
