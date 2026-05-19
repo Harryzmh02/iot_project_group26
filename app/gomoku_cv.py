@@ -79,16 +79,62 @@ def _cluster_lines(positions, gap):
     return [int(np.mean(c)) for c in clusters]
 
 
-def auto_detect_corners(image):
-    """Detect board corners automatically using Hough line transform.
+def _detect_center_star(gray, h, w):
+    """Find the center hoshi (star point) — a small dark dot at the board center.
 
-    Returns a (4, 2) float32 array [TL, TR, BR, BL], or None if detection fails.
+    Searches only the middle 50% of the image so board-frame markings don't interfere.
+    Returns (x, y) pixel coordinates in the full image, or None.
+    """
+    mh, mw = int(h * 0.25), int(w * 0.25)
+    roi = gray[mh : h - mh, mw : w - mw]
+    blurred = cv2.GaussianBlur(roi, (7, 7), 2)
+
+    min_r = max(3, int(min(h, w) / 90))
+    max_r = max(10, int(min(h, w) / 28))
+
+    circles = cv2.HoughCircles(
+        blurred,
+        cv2.HOUGH_GRADIENT,
+        dp=1,
+        minDist=int(min(h, w) * 0.08),
+        param1=50,
+        param2=10,
+        minRadius=min_r,
+        maxRadius=max_r,
+    )
+    if circles is None:
+        return None
+
+    best, best_dark = None, 255
+    for cx, cy, r in np.round(circles[0]).astype(int):
+        fx, fy = cx + mw, cy + mh
+        mask = np.zeros_like(gray)
+        cv2.circle(mask, (fx, fy), max(1, r // 2), 255, -1)
+        mean_v = cv2.mean(gray, mask=mask)[0]
+        if mean_v < best_dark:
+            best_dark, best = mean_v, (fx, fy)
+
+    # Hoshi must be noticeably darker than the light wooden surface
+    return best if (best is not None and best_dark < 140) else None
+
+
+def auto_detect_corners(image):
+    """Detect board corners using grid lines + center star point as a fixed anchor.
+
+    Strategy:
+      1. HoughLinesP → cluster horizontal/vertical lines → estimate cell_gap
+      2. HoughCircles on the central ROI → find the hoshi (center dot at grid 7,7)
+      3. If both succeed: corners = hoshi ± 7 * cell_gap  (exact, no guessing)
+      4. Fallback: expand outermost detected lines by missing-cell count
+
+    Returns a (4, 2) float32 array ordered [TL, TR, BR, BL], or None.
     """
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    h, w = image.shape[:2]
+
+    # --- Step 1: grid line detection ---
     blurred = cv2.GaussianBlur(gray, (5, 5), 0)
     edges = cv2.Canny(blurred, 30, 100)
-
-    h, w = image.shape[:2]
     min_line_len = int(min(h, w) * 0.15)
     lines = cv2.HoughLinesP(
         edges, 1, np.pi / 180,
@@ -96,21 +142,59 @@ def auto_detect_corners(image):
         minLineLength=min_line_len,
         maxLineGap=20,
     )
-    if lines is None:
-        return None
 
     h_positions, v_positions = [], []
-    for x1, y1, x2, y2 in lines[:, 0]:
-        angle = abs(np.degrees(np.arctan2(y2 - y1, x2 - x1)))
-        if angle < 20 or angle > 160:
-            h_positions.append((y1 + y2) / 2)
-        elif 70 < angle < 110:
-            v_positions.append((x1 + x2) / 2)
+    if lines is not None:
+        for x1, y1, x2, y2 in lines[:, 0]:
+            angle = abs(np.degrees(np.arctan2(y2 - y1, x2 - x1)))
+            if angle < 20 or angle > 160:
+                h_positions.append((y1 + y2) / 2)
+            elif 70 < angle < 110:
+                v_positions.append((x1 + x2) / 2)
 
     cluster_gap = min(h, w) * 0.04
     h_clusters = _cluster_lines(h_positions, cluster_gap)
     v_clusters = _cluster_lines(v_positions, cluster_gap)
 
+    cell_gap_h = ((h_clusters[-1] - h_clusters[0]) / (len(h_clusters) - 1)
+                  if len(h_clusters) >= 2 else None)
+    cell_gap_v = ((v_clusters[-1] - v_clusters[0]) / (len(v_clusters) - 1)
+                  if len(v_clusters) >= 2 else None)
+
+    # --- Step 2: center star point ---
+    center = _detect_center_star(gray, h, w)
+
+    # --- Step 3: anchor-based corner computation ---
+    if center is not None:
+        cx, cy = center
+        if cell_gap_h is not None and cell_gap_v is not None:
+            cell_gap = (cell_gap_h + cell_gap_v) / 2
+        elif cell_gap_h is not None:
+            cell_gap = cell_gap_h
+        elif cell_gap_v is not None:
+            cell_gap = cell_gap_v
+        else:
+            cell_gap = None
+
+        if cell_gap is not None and cell_gap > min(h, w) * 0.03:
+            offset = 7 * cell_gap
+            left = int(round(cx - offset))
+            right = int(round(cx + offset))
+            top = int(round(cy - offset))
+            bottom = int(round(cy + offset))
+            margin = cell_gap
+            if (
+                left > -margin and right < w + margin
+                and top > -margin and bottom < h + margin
+                and right - left > min(h, w) * 0.3
+            ):
+                print(f"[CV] Corner anchor: hoshi=({cx},{cy}) cell_gap={cell_gap:.1f}")
+                return np.array(
+                    [[left, top], [right, top], [right, bottom], [left, bottom]],
+                    dtype=np.float32,
+                )
+
+    # --- Step 4: fallback — pure line expansion ---
     if len(h_clusters) < 2 or len(v_clusters) < 2:
         return None
 
@@ -120,10 +204,8 @@ def auto_detect_corners(image):
     if bottom - top < min(h, w) * 0.3 or right - left < min(h, w) * 0.3:
         return None
 
-    # The outermost detected lines are often one cell inside the real board edge.
-    # Expand outward by one estimated cell gap so the warp covers the full grid.
-    h_gap = (bottom - top) / (BOARD_SIZE - 1)
-    v_gap = (right - left) / (BOARD_SIZE - 1)
+    h_gap = cell_gap_h or (bottom - top) / (BOARD_SIZE - 1)
+    v_gap = cell_gap_v or (right - left) / (BOARD_SIZE - 1)
     n_h_missing = (BOARD_SIZE - len(h_clusters)) / 2
     n_v_missing = (BOARD_SIZE - len(v_clusters)) / 2
     top = int(top - h_gap * max(n_h_missing, 0.5))
@@ -131,6 +213,7 @@ def auto_detect_corners(image):
     left = int(left - v_gap * max(n_v_missing, 0.5))
     right = int(right + v_gap * max(n_v_missing, 0.5))
 
+    print("[CV] Corner fallback: line expansion (no hoshi detected)")
     return np.array(
         [[left, top], [right, top], [right, bottom], [left, bottom]],
         dtype=np.float32,
