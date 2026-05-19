@@ -11,7 +11,6 @@ try:
 except ModuleNotFoundError:
     Picamera2 = None
 
-# Reuse the shared preprocessing module so both code paths stay in sync.
 try:
     from image_preprocessing import preprocess_frame as _preprocess_frame
     _HAS_PREPROCESSING_MODULE = True
@@ -73,6 +72,16 @@ def parse_corners(corner_text):
     return order_corners(points)
 
 
+def warp_board(image, corners, output_size=IMAGE_SIZE):
+    source = order_corners(corners)
+    target = np.array(
+        [[0, 0], [output_size - 1, 0], [output_size - 1, output_size - 1], [0, output_size - 1]],
+        dtype=np.float32,
+    )
+    matrix = cv2.getPerspectiveTransform(source, target)
+    return cv2.warpPerspective(image, matrix, (output_size, output_size))
+
+
 def _detect_aruco_markers(gray_frame):
     aruco = getattr(cv2, "aruco", None)
     if aruco is None:
@@ -94,8 +103,7 @@ def detect_marker_corners(frame):
     """Detect the 4 ArUco markers (IDs 0-3) placed at the board corners.
 
     Returns a (4, 2) float32 array [TL, TR, BR, BL] using each marker's
-    inner-facing corner, or None if any marker is missing or the ArUco
-    module is unavailable.
+    inner-facing corner, or None if any marker is missing.
     """
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     marker_corners_list, ids = _detect_aruco_markers(gray)
@@ -114,216 +122,6 @@ def detect_marker_corners(frame):
         return None
 
     return np.array([found[0], found[1], found[2], found[3]], dtype=np.float32)
-
-
-def _cluster_lines(positions, gap):
-    """Merge line positions that are within gap pixels of each other."""
-    if not positions:
-        return []
-    sorted_pos = sorted(positions)
-    clusters = [[sorted_pos[0]]]
-    for p in sorted_pos[1:]:
-        if p - clusters[-1][-1] < gap:
-            clusters[-1].append(p)
-        else:
-            clusters.append([p])
-    return [int(np.mean(c)) for c in clusters]
-
-
-# Known hoshi (star point) grid positions on a 15x15 board, (row, col) 0-indexed.
-# Standard layout: 3x3 arrangement at rows/cols 3, 7, 11.
-_HOSHI_GRID = np.array(
-    [[3, 3], [3, 7], [3, 11],
-     [7, 3], [7, 7], [7, 11],
-     [11, 3], [11, 7], [11, 11]],
-    dtype=np.float32,
-)
-
-
-def _detect_hoshi_candidates(gray, h, w):
-    """Find all hoshi-like dark dots in the inner 80% of the image.
-
-    Uses an adaptive darkness threshold relative to the local background median,
-    so it works on boards of any color (wood, blue, etc.).
-    Returns a list of (x, y) pixel coordinates.
-    """
-    mh, mw = int(h * 0.10), int(w * 0.10)
-    roi = gray[mh : h - mh, mw : w - mw]
-    blurred = cv2.GaussianBlur(roi, (7, 7), 2)
-
-    min_r = max(3, int(min(h, w) / 90))
-    max_r = max(12, int(min(h, w) / 25))
-
-    circles = cv2.HoughCircles(
-        blurred,
-        cv2.HOUGH_GRADIENT,
-        dp=1,
-        minDist=int(min(h, w) * 0.04),
-        param1=50,
-        param2=10,
-        minRadius=min_r,
-        maxRadius=max_r,
-    )
-    if circles is None:
-        return []
-
-    bg_median = float(np.median(roi))
-    dark_threshold = bg_median * 0.75  # hoshi must be ≥25% darker than background
-
-    candidates = []
-    for cx, cy, r in np.round(circles[0]).astype(int):
-        fx, fy = cx + mw, cy + mh
-        if not (0 < fx < w and 0 < fy < h):
-            continue
-        mask = np.zeros_like(gray)
-        cv2.circle(mask, (fx, fy), max(1, r // 2), 255, -1)
-        mean_v = cv2.mean(gray, mask=mask)[0]
-        if mean_v < dark_threshold:
-            candidates.append((fx, fy))
-
-    return candidates
-
-
-def _hoshi_homography(candidates):
-    """Compute a perspective homography from hoshi pixel coords to grid coords.
-
-    Assigns detected candidates to the 3x3 hoshi grid positions and computes
-    H such that H * pixel_coord ≈ warped_image_coord for each hoshi.
-    Returns the 3x3 homography matrix, or None if assignment fails.
-    """
-    pts = np.array(candidates, dtype=np.float32)
-    n = len(pts)
-
-    if n < 4:
-        return None
-
-    if n == 9:
-        # Sort into 3 rows (by y) then 3 cols (by x within each row)
-        order = np.lexsort((pts[:, 0], pts[:, 1]))
-        pts_sorted = pts[order]
-        rows = []
-        for i in range(3):
-            row = pts_sorted[i * 3 : (i + 1) * 3]
-            rows.append(row[np.argsort(row[:, 0])])
-        src_pts = np.vstack(rows)
-        grid = _HOSHI_GRID
-    else:
-        # Pick the 4 extremal points — they map to the 4 corner hoshi
-        sums = pts.sum(axis=1)
-        diffs = pts[:, 0] - pts[:, 1]
-        tl = pts[np.argmin(sums)]
-        br = pts[np.argmax(sums)]
-        tr = pts[np.argmax(diffs)]
-        bl = pts[np.argmin(diffs)]
-        src_pts = np.array([tl, tr, br, bl], dtype=np.float32)
-        # Corner hoshi: (3,3) TL, (3,11) TR, (11,11) BR, (11,3) BL
-        grid = np.array([[3, 3], [3, 11], [11, 11], [11, 3]], dtype=np.float32)
-
-    # Target: hoshi pixel positions in the 800×800 warped output
-    cell = IMAGE_SIZE / (BOARD_SIZE - 1)
-    dst_pts = np.array([[col * cell, row * cell] for row, col in grid], dtype=np.float32)
-
-    if len(src_pts) == 4:
-        M = cv2.getPerspectiveTransform(src_pts, dst_pts)
-    else:
-        M, _ = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 5.0)
-
-    return M
-
-
-def auto_detect_corners(image):
-    """Detect board corners via hoshi-based perspective homography.
-
-    Finds the 9 star points, builds a homography from their raw-image pixel
-    positions to their known warped-grid positions, then inverse-maps the 4
-    board corner grid intersections back into raw-image space.
-
-    This correctly handles tilted cameras and perspective distortion because
-    the homography encodes the full projective transform — not just a uniform
-    cell gap.
-
-    Returns a (4, 2) float32 array [TL, TR, BR, BL] in raw-image pixel coords,
-    or None if detection fails.
-    """
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    h, w = image.shape[:2]
-
-    candidates = _detect_hoshi_candidates(gray, h, w)
-
-    if len(candidates) >= 4:
-        M = _hoshi_homography(candidates)
-        if M is not None:
-            sz = float(IMAGE_SIZE - 1)
-            board_corners_warped = np.array(
-                [[0, 0], [sz, 0], [sz, sz], [0, sz]], dtype=np.float32
-            ).reshape(1, -1, 2)
-            M_inv = np.linalg.inv(M)
-            corners_raw = cv2.perspectiveTransform(board_corners_warped, M_inv).reshape(-1, 2)
-            print(f"[CV] Hoshi anchor: {len(candidates)} dots → corners {corners_raw.tolist()}")
-            return corners_raw.astype(np.float32)
-
-    # Fallback: expand outermost detected grid lines
-    return _corners_from_lines(gray, h, w)
-
-
-def _corners_from_lines(gray, h, w):
-    """Line-based corner detection fallback (used when hoshi detection fails)."""
-    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-    edges = cv2.Canny(blurred, 30, 100)
-    min_line_len = int(min(h, w) * 0.15)
-    lines = cv2.HoughLinesP(
-        edges, 1, np.pi / 180,
-        threshold=60,
-        minLineLength=min_line_len,
-        maxLineGap=20,
-    )
-
-    h_positions, v_positions = [], []
-    if lines is not None:
-        for x1, y1, x2, y2 in lines[:, 0]:
-            angle = abs(np.degrees(np.arctan2(y2 - y1, x2 - x1)))
-            if angle < 20 or angle > 160:
-                h_positions.append((y1 + y2) / 2)
-            elif 70 < angle < 110:
-                v_positions.append((x1 + x2) / 2)
-
-    cluster_gap = min(h, w) * 0.04
-    h_clusters = _cluster_lines(h_positions, cluster_gap)
-    v_clusters = _cluster_lines(v_positions, cluster_gap)
-
-    if len(h_clusters) < 2 or len(v_clusters) < 2:
-        return None
-
-    top, bottom = h_clusters[0], h_clusters[-1]
-    left, right = v_clusters[0], v_clusters[-1]
-
-    if bottom - top < min(h, w) * 0.3 or right - left < min(h, w) * 0.3:
-        return None
-
-    h_gap = (bottom - top) / (len(h_clusters) - 1)
-    v_gap = (right - left) / (len(v_clusters) - 1)
-    n_h = (BOARD_SIZE - len(h_clusters)) / 2
-    n_v = (BOARD_SIZE - len(v_clusters)) / 2
-    top = int(top - h_gap * max(n_h, 0.5))
-    bottom = int(bottom + h_gap * max(n_h, 0.5))
-    left = int(left - v_gap * max(n_v, 0.5))
-    right = int(right + v_gap * max(n_v, 0.5))
-
-    print("[CV] Corner fallback: line expansion (no hoshi pattern found)")
-    return np.array(
-        [[left, top], [right, top], [right, bottom], [left, bottom]],
-        dtype=np.float32,
-    )
-
-
-def warp_board(image, corners, output_size=IMAGE_SIZE):
-    source = order_corners(corners)
-    target = np.array(
-        [[0, 0], [output_size - 1, 0], [output_size - 1, output_size - 1], [0, output_size - 1]],
-        dtype=np.float32,
-    )
-    matrix = cv2.getPerspectiveTransform(source, target)
-    return cv2.warpPerspective(image, matrix, (output_size, output_size))
 
 
 def point_to_board_position(x, y, image_size):
@@ -359,6 +157,7 @@ def _classify_stone_color(board_image, x, y, radius):
 
 
 def find_stones(board_image):
+    """Detect stones using HoughCircles (shape-based, robust to hand false positives)."""
     image_size = board_image.shape[0]
     cell_gap = image_size / (BOARD_SIZE - 1)
     min_radius = int(cell_gap * 0.22)
