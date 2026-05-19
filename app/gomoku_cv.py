@@ -82,10 +82,12 @@ def _cluster_lines(positions, gap):
 def _detect_center_star(gray, h, w):
     """Find the center hoshi (star point) — a small dark dot at the board center.
 
-    Searches only the middle 50% of the image so board-frame markings don't interfere.
+    Uses a tight central crop (middle third) so only the (7,7) star point can be
+    the closest candidate to the ROI center. Among detected circles we pick the one
+    nearest to the image center that is also dark enough to be a hoshi.
     Returns (x, y) pixel coordinates in the full image, or None.
     """
-    mh, mw = int(h * 0.25), int(w * 0.25)
+    mh, mw = int(h * 0.33), int(w * 0.33)
     roi = gray[mh : h - mh, mw : w - mw]
     blurred = cv2.GaussianBlur(roi, (7, 7), 2)
 
@@ -96,7 +98,7 @@ def _detect_center_star(gray, h, w):
         blurred,
         cv2.HOUGH_GRADIENT,
         dp=1,
-        minDist=int(min(h, w) * 0.08),
+        minDist=int(min(h, w) * 0.06),
         param1=50,
         param2=10,
         minRadius=min_r,
@@ -105,17 +107,22 @@ def _detect_center_star(gray, h, w):
     if circles is None:
         return None
 
-    best, best_dark = None, 255
+    # Image center in full-image coordinates
+    img_cx, img_cy = w / 2, h / 2
+
+    best, best_dist = None, float("inf")
     for cx, cy, r in np.round(circles[0]).astype(int):
         fx, fy = cx + mw, cy + mh
         mask = np.zeros_like(gray)
         cv2.circle(mask, (fx, fy), max(1, r // 2), 255, -1)
         mean_v = cv2.mean(gray, mask=mask)[0]
-        if mean_v < best_dark:
-            best_dark, best = mean_v, (fx, fy)
+        if mean_v >= 150:
+            continue  # too bright — not a hoshi dot
+        dist = np.hypot(fx - img_cx, fy - img_cy)
+        if dist < best_dist:
+            best_dist, best = dist, (fx, fy)
 
-    # Hoshi must be noticeably darker than the light wooden surface
-    return best if (best is not None and best_dark < 140) else None
+    return best
 
 
 def auto_detect_corners(image):
