@@ -120,6 +120,17 @@ def auto_detect_corners(image):
     if bottom - top < min(h, w) * 0.3 or right - left < min(h, w) * 0.3:
         return None
 
+    # The outermost detected lines are often one cell inside the real board edge.
+    # Expand outward by one estimated cell gap so the warp covers the full grid.
+    h_gap = (bottom - top) / (BOARD_SIZE - 1)
+    v_gap = (right - left) / (BOARD_SIZE - 1)
+    n_h_missing = (BOARD_SIZE - len(h_clusters)) / 2
+    n_v_missing = (BOARD_SIZE - len(v_clusters)) / 2
+    top = int(top - h_gap * max(n_h_missing, 0.5))
+    bottom = int(bottom + h_gap * max(n_h_missing, 0.5))
+    left = int(left - v_gap * max(n_v_missing, 0.5))
+    right = int(right + v_gap * max(n_v_missing, 0.5))
+
     return np.array(
         [[left, top], [right, top], [right, bottom], [left, bottom]],
         dtype=np.float32,
@@ -150,67 +161,60 @@ def is_near_grid_intersection(x, y, row, col, image_size):
     return np.hypot(x - expected_x, y - expected_y) <= cell_gap * 0.38
 
 
-def find_stones_from_mask(mask, color, image_size):
-    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    min_area = (image_size * 0.015) ** 2
-    max_area = (image_size * 0.09) ** 2
-    stones = []
-
-    for contour in contours:
-        area = cv2.contourArea(contour)
-        if area < min_area or area > max_area:
-            continue
-
-        perimeter = cv2.arcLength(contour, True)
-        if perimeter == 0:
-            continue
-
-        circularity = 4 * np.pi * area / (perimeter * perimeter)
-        if circularity < 0.45:
-            continue
-
-        moments = cv2.moments(contour)
-        if moments["m00"] == 0:
-            continue
-
-        x = int(moments["m10"] / moments["m00"])
-        y = int(moments["m01"] / moments["m00"])
-        row, col = point_to_board_position(x, y, image_size)
-        stones.append(Stone(color=color, x=x, y=y, row=row, col=col, area=area))
-
-    return stones
+def _classify_stone_color(board_image, x, y, radius):
+    """Sample pixels inside the circle to determine black or white stone."""
+    hsv = cv2.cvtColor(board_image, cv2.COLOR_BGR2HSV)
+    mask = np.zeros(board_image.shape[:2], dtype=np.uint8)
+    cv2.circle(mask, (x, y), max(1, radius // 2), 255, -1)
+    mean_v = cv2.mean(hsv, mask=mask)[2]
+    mean_s = cv2.mean(hsv, mask=mask)[1]
+    if mean_v < 90:
+        return "black"
+    if mean_v > 140 and mean_s < 70:
+        return "white"
+    return None
 
 
 def find_stones(board_image):
-    hsv = cv2.cvtColor(board_image, cv2.COLOR_BGR2HSV)
     image_size = board_image.shape[0]
+    cell_gap = image_size / (BOARD_SIZE - 1)
+    min_radius = int(cell_gap * 0.22)
+    max_radius = int(cell_gap * 0.46)
 
-    black_mask = cv2.inRange(hsv, np.array([0, 0, 0]), np.array([180, 255, 75]))
-    white_mask = cv2.inRange(hsv, np.array([0, 0, 155]), np.array([180, 80, 255]))
+    gray = cv2.cvtColor(board_image, cv2.COLOR_BGR2GRAY)
+    blurred = cv2.GaussianBlur(gray, (9, 9), 2)
 
-    kernel = np.ones((5, 5), np.uint8)
-    black_mask = cv2.morphologyEx(black_mask, cv2.MORPH_OPEN, kernel)
-    black_mask = cv2.morphologyEx(black_mask, cv2.MORPH_CLOSE, kernel)
-    white_mask = cv2.morphologyEx(white_mask, cv2.MORPH_OPEN, kernel)
-    white_mask = cv2.morphologyEx(white_mask, cv2.MORPH_CLOSE, kernel)
-
-    detected = []
-    detected.extend(find_stones_from_mask(black_mask, "black", image_size))
-    detected.extend(find_stones_from_mask(white_mask, "white", image_size))
+    circles = cv2.HoughCircles(
+        blurred,
+        cv2.HOUGH_GRADIENT,
+        dp=1,
+        minDist=int(cell_gap * 0.7),
+        param1=50,
+        param2=20,
+        minRadius=min_radius,
+        maxRadius=max_radius,
+    )
 
     board = np.zeros((BOARD_SIZE, BOARD_SIZE), dtype=np.uint8)
     stones = []
+    dummy_mask = np.zeros((image_size, image_size), dtype=np.uint8)
 
-    for stone in sorted(detected, key=lambda item: item.area, reverse=True):
-        if not is_near_grid_intersection(stone.x, stone.y, stone.row, stone.col, image_size):
+    if circles is None:
+        return board, stones, dummy_mask, dummy_mask
+
+    for cx, cy, r in np.round(circles[0]).astype(int):
+        row, col = point_to_board_position(cx, cy, image_size)
+        if not is_near_grid_intersection(cx, cy, row, col, image_size):
             continue
+        color = _classify_stone_color(board_image, cx, cy, r)
+        if color is None:
+            continue
+        value = BLACK if color == "black" else WHITE
+        if board[row, col] == EMPTY:
+            board[row, col] = value
+            stones.append(Stone(color=color, x=cx, y=cy, row=row, col=col, area=np.pi * r * r))
 
-        value = BLACK if stone.color == "black" else WHITE
-        if board[stone.row, stone.col] == EMPTY:
-            board[stone.row, stone.col] = value
-            stones.append(stone)
-
-    return board, stones, black_mask, white_mask
+    return board, stones, dummy_mask, dummy_mask
 
 
 def compute_delta(old_board, new_board):

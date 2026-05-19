@@ -8,6 +8,7 @@ import json
 import time
 from datetime import datetime
 
+import cv2
 import numpy as np
 import paho.mqtt.client as mqtt
 
@@ -17,13 +18,11 @@ except ImportError:
     Picamera2 = None
 
 from arduino_feedback_client import ArduinoFeedbackClient
-from frame_stability import FrameStabilityChecker
 from gomoku_cv import auto_detect_corners, compute_delta, parse_corners, process_frame
 
 
 CAPTURE_INTERVAL_SECONDS = 1.0
 STABLE_FRAMES_REQUIRED = 3
-DIFF_THRESHOLD = 5.0
 ARDUINO_PORT = "/dev/ttyACM0"
 MQTT_BROKER = "localhost"
 MQTT_PORT = 1883
@@ -44,7 +43,11 @@ def run_cv_pipeline(frame: np.ndarray, board_corners):
     global _old_board
 
     corners = parse_corners(board_corners) if isinstance(board_corners, str) else board_corners
-    board, _, _, _, _ = process_frame(frame, corners)
+    board, _, result_image, _, _ = process_frame(frame, corners)
+
+    cv2.imshow("Gomoku CV Preview", result_image)
+    cv2.waitKey(1)
+
     changes = compute_delta(_old_board, board)
     _old_board = board.copy()
 
@@ -92,10 +95,6 @@ def main():
         )
 
     camera = Picamera2()
-    stability = FrameStabilityChecker(
-        required_stable_frames=STABLE_FRAMES_REQUIRED,
-        diff_threshold=DIFF_THRESHOLD,
-    )
     arduino = ArduinoFeedbackClient(port=ARDUINO_PORT)
 
     arduino_ok = arduino.connect()
@@ -125,19 +124,33 @@ def main():
         else:
             print("[Pipeline] Auto-detection failed — running without perspective warp.")
 
+    consecutive_same = 0
+    last_board_state = _old_board.copy()
+    pending_move = None
+
     try:
         while True:
             raw_frame: np.ndarray = camera.capture_array()
+            time.sleep(CAPTURE_INTERVAL_SECONDS)
 
-            if not stability.update(raw_frame):
-                time.sleep(CAPTURE_INTERVAL_SECONDS)
-                continue
-
-            stability.reset()
             move = run_cv_pipeline(raw_frame, active_corners)
-            if move is None:
-                time.sleep(CAPTURE_INTERVAL_SECONDS)
+            current_state = _old_board.copy()
+
+            if np.array_equal(current_state, last_board_state):
+                consecutive_same += 1
+            else:
+                # Board state changed — save the triggering move and start counting
+                consecutive_same = 1
+                last_board_state = current_state
+                if move is not None:
+                    pending_move = move
+
+            if consecutive_same < STABLE_FRAMES_REQUIRED or pending_move is None:
                 continue
+
+            move = pending_move
+            pending_move = None
+            consecutive_same = 0
 
             print(f"[Pipeline] Move detected: {move}")
 
