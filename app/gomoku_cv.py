@@ -79,67 +79,144 @@ def _cluster_lines(positions, gap):
     return [int(np.mean(c)) for c in clusters]
 
 
-def _detect_center_star(gray, h, w):
-    """Find the center hoshi (star point) — a small dark dot at the board center.
+# Known hoshi (star point) grid positions on a 15x15 board, (row, col) 0-indexed.
+# Standard layout: 3x3 arrangement at rows/cols 3, 7, 11.
+_HOSHI_GRID = np.array(
+    [[3, 3], [3, 7], [3, 11],
+     [7, 3], [7, 7], [7, 11],
+     [11, 3], [11, 7], [11, 11]],
+    dtype=np.float32,
+)
 
-    Uses a tight central crop (middle third) so only the (7,7) star point can be
-    the closest candidate to the ROI center. Among detected circles we pick the one
-    nearest to the image center that is also dark enough to be a hoshi.
-    Returns (x, y) pixel coordinates in the full image, or None.
+
+def _detect_hoshi_candidates(gray, h, w):
+    """Find all hoshi-like dark dots in the inner 80% of the image.
+
+    Uses an adaptive darkness threshold relative to the local background median,
+    so it works on boards of any color (wood, blue, etc.).
+    Returns a list of (x, y) pixel coordinates.
     """
-    mh, mw = int(h * 0.33), int(w * 0.33)
+    mh, mw = int(h * 0.10), int(w * 0.10)
     roi = gray[mh : h - mh, mw : w - mw]
     blurred = cv2.GaussianBlur(roi, (7, 7), 2)
 
     min_r = max(3, int(min(h, w) / 90))
-    max_r = max(10, int(min(h, w) / 28))
+    max_r = max(12, int(min(h, w) / 25))
 
     circles = cv2.HoughCircles(
         blurred,
         cv2.HOUGH_GRADIENT,
         dp=1,
-        minDist=int(min(h, w) * 0.06),
+        minDist=int(min(h, w) * 0.04),
         param1=50,
         param2=10,
         minRadius=min_r,
         maxRadius=max_r,
     )
     if circles is None:
-        return None
+        return []
 
-    # Image center in full-image coordinates
-    img_cx, img_cy = w / 2, h / 2
+    bg_median = float(np.median(roi))
+    dark_threshold = bg_median * 0.75  # hoshi must be ≥25% darker than background
 
-    best, best_dist = None, float("inf")
+    candidates = []
     for cx, cy, r in np.round(circles[0]).astype(int):
         fx, fy = cx + mw, cy + mh
+        if not (0 < fx < w and 0 < fy < h):
+            continue
         mask = np.zeros_like(gray)
         cv2.circle(mask, (fx, fy), max(1, r // 2), 255, -1)
         mean_v = cv2.mean(gray, mask=mask)[0]
-        if mean_v >= 150:
-            continue  # too bright — not a hoshi dot
-        dist = np.hypot(fx - img_cx, fy - img_cy)
-        if dist < best_dist:
-            best_dist, best = dist, (fx, fy)
+        if mean_v < dark_threshold:
+            candidates.append((fx, fy))
 
-    return best
+    return candidates
+
+
+def _hoshi_homography(candidates):
+    """Compute a perspective homography from hoshi pixel coords to grid coords.
+
+    Assigns detected candidates to the 3x3 hoshi grid positions and computes
+    H such that H * pixel_coord ≈ warped_image_coord for each hoshi.
+    Returns the 3x3 homography matrix, or None if assignment fails.
+    """
+    pts = np.array(candidates, dtype=np.float32)
+    n = len(pts)
+
+    if n < 4:
+        return None
+
+    if n == 9:
+        # Sort into 3 rows (by y) then 3 cols (by x within each row)
+        order = np.lexsort((pts[:, 0], pts[:, 1]))
+        pts_sorted = pts[order]
+        rows = []
+        for i in range(3):
+            row = pts_sorted[i * 3 : (i + 1) * 3]
+            rows.append(row[np.argsort(row[:, 0])])
+        src_pts = np.vstack(rows)
+        grid = _HOSHI_GRID
+    else:
+        # Pick the 4 extremal points — they map to the 4 corner hoshi
+        sums = pts.sum(axis=1)
+        diffs = pts[:, 0] - pts[:, 1]
+        tl = pts[np.argmin(sums)]
+        br = pts[np.argmax(sums)]
+        tr = pts[np.argmax(diffs)]
+        bl = pts[np.argmin(diffs)]
+        src_pts = np.array([tl, tr, br, bl], dtype=np.float32)
+        # Corner hoshi: (3,3) TL, (3,11) TR, (11,11) BR, (11,3) BL
+        grid = np.array([[3, 3], [3, 11], [11, 11], [11, 3]], dtype=np.float32)
+
+    # Target: hoshi pixel positions in the 800×800 warped output
+    cell = IMAGE_SIZE / (BOARD_SIZE - 1)
+    dst_pts = np.array([[col * cell, row * cell] for row, col in grid], dtype=np.float32)
+
+    if len(src_pts) == 4:
+        M = cv2.getPerspectiveTransform(src_pts, dst_pts)
+    else:
+        M, _ = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 5.0)
+
+    return M
 
 
 def auto_detect_corners(image):
-    """Detect board corners using grid lines + center star point as a fixed anchor.
+    """Detect board corners via hoshi-based perspective homography.
 
-    Strategy:
-      1. HoughLinesP → cluster horizontal/vertical lines → estimate cell_gap
-      2. HoughCircles on the central ROI → find the hoshi (center dot at grid 7,7)
-      3. If both succeed: corners = hoshi ± 7 * cell_gap  (exact, no guessing)
-      4. Fallback: expand outermost detected lines by missing-cell count
+    Finds the 9 star points, builds a homography from their raw-image pixel
+    positions to their known warped-grid positions, then inverse-maps the 4
+    board corner grid intersections back into raw-image space.
 
-    Returns a (4, 2) float32 array ordered [TL, TR, BR, BL], or None.
+    This correctly handles tilted cameras and perspective distortion because
+    the homography encodes the full projective transform — not just a uniform
+    cell gap.
+
+    Returns a (4, 2) float32 array [TL, TR, BR, BL] in raw-image pixel coords,
+    or None if detection fails.
     """
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     h, w = image.shape[:2]
 
-    # --- Step 1: grid line detection ---
+    candidates = _detect_hoshi_candidates(gray, h, w)
+
+    if len(candidates) >= 4:
+        M = _hoshi_homography(candidates)
+        if M is not None:
+            sz = float(IMAGE_SIZE - 1)
+            board_corners_warped = np.array(
+                [[0, 0], [sz, 0], [sz, sz], [0, sz]], dtype=np.float32
+            ).reshape(1, -1, 2)
+            M_inv = np.linalg.inv(M)
+            corners_raw = cv2.perspectiveTransform(board_corners_warped, M_inv).reshape(-1, 2)
+            print(f"[CV] Hoshi anchor: {len(candidates)} dots → corners {corners_raw.tolist()}")
+            return corners_raw.astype(np.float32)
+
+    # Fallback: expand outermost detected grid lines
+    return _corners_from_lines(gray, h, w)
+
+
+def _corners_from_lines(gray, h, w):
+    """Line-based corner detection fallback (used when hoshi detection fails)."""
     blurred = cv2.GaussianBlur(gray, (5, 5), 0)
     edges = cv2.Canny(blurred, 30, 100)
     min_line_len = int(min(h, w) * 0.15)
@@ -163,45 +240,6 @@ def auto_detect_corners(image):
     h_clusters = _cluster_lines(h_positions, cluster_gap)
     v_clusters = _cluster_lines(v_positions, cluster_gap)
 
-    cell_gap_h = ((h_clusters[-1] - h_clusters[0]) / (len(h_clusters) - 1)
-                  if len(h_clusters) >= 2 else None)
-    cell_gap_v = ((v_clusters[-1] - v_clusters[0]) / (len(v_clusters) - 1)
-                  if len(v_clusters) >= 2 else None)
-
-    # --- Step 2: center star point ---
-    center = _detect_center_star(gray, h, w)
-
-    # --- Step 3: anchor-based corner computation ---
-    if center is not None:
-        cx, cy = center
-        if cell_gap_h is not None and cell_gap_v is not None:
-            cell_gap = (cell_gap_h + cell_gap_v) / 2
-        elif cell_gap_h is not None:
-            cell_gap = cell_gap_h
-        elif cell_gap_v is not None:
-            cell_gap = cell_gap_v
-        else:
-            cell_gap = None
-
-        if cell_gap is not None and cell_gap > min(h, w) * 0.03:
-            offset = 7 * cell_gap
-            left = int(round(cx - offset))
-            right = int(round(cx + offset))
-            top = int(round(cy - offset))
-            bottom = int(round(cy + offset))
-            margin = cell_gap
-            if (
-                left > -margin and right < w + margin
-                and top > -margin and bottom < h + margin
-                and right - left > min(h, w) * 0.3
-            ):
-                print(f"[CV] Corner anchor: hoshi=({cx},{cy}) cell_gap={cell_gap:.1f}")
-                return np.array(
-                    [[left, top], [right, top], [right, bottom], [left, bottom]],
-                    dtype=np.float32,
-                )
-
-    # --- Step 4: fallback — pure line expansion ---
     if len(h_clusters) < 2 or len(v_clusters) < 2:
         return None
 
@@ -211,16 +249,16 @@ def auto_detect_corners(image):
     if bottom - top < min(h, w) * 0.3 or right - left < min(h, w) * 0.3:
         return None
 
-    h_gap = cell_gap_h or (bottom - top) / (BOARD_SIZE - 1)
-    v_gap = cell_gap_v or (right - left) / (BOARD_SIZE - 1)
-    n_h_missing = (BOARD_SIZE - len(h_clusters)) / 2
-    n_v_missing = (BOARD_SIZE - len(v_clusters)) / 2
-    top = int(top - h_gap * max(n_h_missing, 0.5))
-    bottom = int(bottom + h_gap * max(n_h_missing, 0.5))
-    left = int(left - v_gap * max(n_v_missing, 0.5))
-    right = int(right + v_gap * max(n_v_missing, 0.5))
+    h_gap = (bottom - top) / (len(h_clusters) - 1)
+    v_gap = (right - left) / (len(v_clusters) - 1)
+    n_h = (BOARD_SIZE - len(h_clusters)) / 2
+    n_v = (BOARD_SIZE - len(v_clusters)) / 2
+    top = int(top - h_gap * max(n_h, 0.5))
+    bottom = int(bottom + h_gap * max(n_h, 0.5))
+    left = int(left - v_gap * max(n_v, 0.5))
+    right = int(right + v_gap * max(n_v, 0.5))
 
-    print("[CV] Corner fallback: line expansion (no hoshi detected)")
+    print("[CV] Corner fallback: line expansion (no hoshi pattern found)")
     return np.array(
         [[left, top], [right, top], [right, bottom], [left, bottom]],
         dtype=np.float32,
