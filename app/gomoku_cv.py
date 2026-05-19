@@ -151,7 +151,11 @@ def point_to_board_position(x, y, image_size):
     cell_gap = image_size / (BOARD_SIZE - 1)
     row = int(round(y / cell_gap))
     col = int(round(x / cell_gap))
-    return max(0, min(BOARD_SIZE - 1, row)), max(0, min(BOARD_SIZE - 1, col))
+    return row, col
+
+
+def is_within_board(row, col):
+    return 0 <= row < BOARD_SIZE and 0 <= col < BOARD_SIZE
 
 
 def is_near_grid_intersection(x, y, row, col, image_size):
@@ -204,7 +208,12 @@ def find_stones(board_image):
 
     for cx, cy, r in np.round(circles[0]).astype(int):
         row, col = point_to_board_position(cx, cy, image_size)
+        if not is_within_board(row, col):
+            continue
         if not is_near_grid_intersection(cx, cy, row, col, image_size):
+            continue
+        # Exclude the 4 corner 2x2 zones — magnetic board clips live there
+        if (row <= 1 or row >= BOARD_SIZE - 2) and (col <= 1 or col >= BOARD_SIZE - 2):
             continue
         color = _classify_stone_color(board_image, cx, cy, r)
         if color is None:
