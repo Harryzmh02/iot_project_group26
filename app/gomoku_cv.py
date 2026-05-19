@@ -88,7 +88,7 @@ def _detect_aruco_markers(gray_frame):
     if aruco is None:
         return [], None
 
-    dictionary = aruco.getPredefinedDictionary(aruco.DICT_4X4_50)
+    dictionary = aruco.getPredefinedDictionary(aruco.DICT_ARUCO_ORIGINAL)
     if hasattr(aruco, "DetectorParameters"):
         parameters = aruco.DetectorParameters()
     else:
