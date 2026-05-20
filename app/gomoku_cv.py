@@ -18,7 +18,7 @@ try:
 except ModuleNotFoundError:
     _HAS_PREPROCESSING_MODULE = False
 
-BOARD_SIZE = 15
+BOARD_SIZE = 13
 IMAGE_SIZE = 800
 EMPTY = 0
 BLACK = 1
