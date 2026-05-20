@@ -36,10 +36,10 @@ ARUCO_INNER_CORNER_INDEX = {
     3: 1,  # bottom-left marker   -> its top-right corner
 }
 # Fraction of the playing-grid side that the ArUco quad extends beyond the grid.
-# 0.0 = markers sit exactly on the outer grid intersections (matches the printed
-# board where the inner corners of the four ArUco markers touch line 0/col 0,
-# line 0/col last, etc.). Tune via test_aruco_grid.py if the printed layout changes.
-ARUCO_PADDING_RATIO = 0.0
+# Matches the printable PDF: 20 cm playing grid with 1 cm white quiet zone
+# between each marker and the nearest grid line. The quiet zone is the minimum
+# ArUco needs to lock onto the marker's outer border. 1 / 20 = 0.05.
+ARUCO_PADDING_RATIO = 1.0 / 20.0  # = 0.05
 
 
 @dataclass
