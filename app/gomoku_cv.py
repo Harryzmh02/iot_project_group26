@@ -18,7 +18,7 @@ try:
 except ModuleNotFoundError:
     _HAS_PREPROCESSING_MODULE = False
 
-BOARD_SIZE = 13
+BOARD_SIZE = 15
 IMAGE_SIZE = 800
 EMPTY = 0
 BLACK = 1
@@ -36,10 +36,10 @@ ARUCO_INNER_CORNER_INDEX = {
     3: 1,  # bottom-left marker   -> its top-right corner
 }
 # Fraction of the playing-grid side that the ArUco quad extends beyond the grid.
-# 0.0 = markers sit exactly on the outer grid intersections.
-# 0.05 = markers sit ~5% of the board width outside the outer grid lines.
-# Tune visually with test_aruco_grid.py until the drawn grid overlays the printed one.
-ARUCO_PADDING_RATIO = 0.05
+# 0.0 = markers sit exactly on the outer grid intersections (matches the printed
+# board where the inner corners of the four ArUco markers touch line 0/col 0,
+# line 0/col last, etc.). Tune via test_aruco_grid.py if the printed layout changes.
+ARUCO_PADDING_RATIO = 0.0
 
 
 @dataclass

@@ -41,9 +41,9 @@ def main():
         method = "Hough lines (ArUco fallback)" if corners is not None else None
 
     if corners is None:
-        print("No corners detected — showing raw frame.")
-        cv2.imshow("Result", frame)
-        cv2.waitKey(0)
+        print("No corners detected.")
+        cv2.imwrite("aruco_no_corners.jpg", frame)
+        print("Saved aruco_no_corners.jpg (raw frame for inspection).")
         return
 
     print(f"Corners detected via: {method}")
@@ -52,7 +52,6 @@ def main():
     warped = warp_board(frame, corners, output_size=IMAGE_SIZE)
     result = draw_grid(warped)
 
-    # Also draw detected corners on original frame
     original_annotated = frame.copy()
     labels = ["TL", "TR", "BR", "BL"]
     for (x, y), label in zip(corners.astype(int), labels):
@@ -60,12 +59,9 @@ def main():
         cv2.putText(original_annotated, label, (x + 12, y - 12),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2, cv2.LINE_AA)
 
-    cv2.imshow("Original + corners", original_annotated)
-    cv2.imshow(f"Warped 13x13 grid ({method})", result)
+    cv2.imwrite("aruco_corners_on_original.jpg", original_annotated)
     cv2.imwrite("aruco_grid_result.jpg", result)
-    print("Saved aruco_grid_result.jpg")
-    cv2.waitKey(0)
-    cv2.destroyAllWindows()
+    print("Saved aruco_corners_on_original.jpg and aruco_grid_result.jpg")
 
 
 if __name__ == "__main__":
