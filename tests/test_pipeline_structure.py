@@ -55,9 +55,7 @@ gomoku_cv_mod.compute_delta  = lambda old, new: []
 gomoku_cv_mod.parse_corners  = lambda s: None
 sys.modules.setdefault("gomoku_cv", gomoku_cv_mod)
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'raspberrypi_capture'))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'raspberrypi_integration'))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'computer_vision'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'app'))
 
 
 def test_frame_stability_importable():
@@ -85,6 +83,17 @@ def test_arduino_feedback_client_importable():
 
 def test_pipeline_cv_returns_none_for_empty_board():
     import main_pipeline
+
+    # Restore process_frame / compute_delta to the stub versions from the
+    # gomoku_cv stub module.  A previously-run test module may have
+    # monkey-patched these attributes without cleaning up; we reset them
+    # here explicitly so this test is independent of execution order.
+    gomoku_cv_stub = sys.modules.get("gomoku_cv")
+    if gomoku_cv_stub is not None:
+        main_pipeline.process_frame = gomoku_cv_stub.process_frame
+        main_pipeline.compute_delta = gomoku_cv_stub.compute_delta
+        main_pipeline.parse_corners = gomoku_cv_stub.parse_corners
+
     main_pipeline._old_board = np.zeros((15, 15), dtype=np.uint8)
     dummy_frame = np.zeros((800, 800, 3), dtype=np.uint8)
     result = main_pipeline.run_cv_pipeline(dummy_frame, board_corners=None)

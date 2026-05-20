@@ -20,7 +20,8 @@ run_test test_frame_stability.py
 run_test test_image_preprocessing.py
 run_test test_pipeline_structure.py
 run_test test_pipeline_integration.py
-run_test test_cv_mqtt_integration.py
+run_test test_dashboard_flow_contract.py
+run_test test_script_entrypoints.py
 
 echo ""
 echo "=============================="

@@ -1,6 +1,6 @@
 import sys
 import os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'raspberrypi_capture'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'app'))
 
 import numpy as np
 from frame_stability import FrameStabilityChecker

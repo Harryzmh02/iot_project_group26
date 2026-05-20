@@ -32,7 +32,7 @@ if "cv2" not in sys.modules:
         cv2_mod.warpPerspective = _warp_perspective
         sys.modules["cv2"] = cv2_mod
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'raspberrypi_capture'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'app'))
 
 from image_preprocessing import preprocess_frame, crop_to_board
 

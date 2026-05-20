@@ -328,7 +328,7 @@
         "width": 0,
         "height": 0,
         "name": "",
-        "label": "postion",
+        "label": "Position",
         "format": "{{msg.payload}}",
         "layout": "row-spread",
         "className": "",
@@ -469,10 +469,10 @@
         "y": 700,
         "wires": [
             [
-                "78400b6dba5a7627"
+                "18b5fc5996b94eef"
             ],
             [
-                "18b5fc5996b94eef"
+                "78400b6dba5a7627"
             ],
             [
                 "69c949219f014da0"

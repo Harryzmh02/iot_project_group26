@@ -56,18 +56,28 @@ gomoku_cv_mod.compute_delta  = lambda old, new: []
 gomoku_cv_mod.parse_corners  = lambda s: None
 sys.modules.setdefault("gomoku_cv", gomoku_cv_mod)
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'raspberrypi_capture'))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'raspberrypi_integration'))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'computer_vision'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'app'))
 
 import main_pipeline
+
+# Save the original module-level functions so reset_state() can restore them.
+# Tests that patch main_pipeline.process_frame / compute_delta must call
+# reset_state() at the start so the patches from a previous test don't leak
+# into later tests (including tests in other test modules that share the same
+# already-imported main_pipeline module object).
+_orig_process_frame = main_pipeline.process_frame
+_orig_compute_delta = main_pipeline.compute_delta
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
 def reset_state():
     main_pipeline._old_board = np.zeros((15, 15), dtype=np.uint8)
+    main_pipeline._mqtt_connected = True
     main_pipeline._move_number = 0
+    # Restore any monkey-patches applied by previous tests.
+    main_pipeline.process_frame = _orig_process_frame
+    main_pipeline.compute_delta = _orig_compute_delta
 
 
 def board_with_stone(row, col, color=1):
@@ -78,9 +88,15 @@ def board_with_stone(row, col, color=1):
 
 def capture_published():
     captured = []
-    main_pipeline._mqtt_client.publish = lambda topic, payload: captured.append(
-        (topic, json.loads(payload))
-    )
+
+    class _PublishResult:
+        rc = getattr(main_pipeline.mqtt, "MQTT_ERR_SUCCESS", 0)
+
+    def _publish(topic, payload):
+        captured.append((topic, json.loads(payload)))
+        return _PublishResult()
+
+    main_pipeline._mqtt_client.publish = _publish
     return captured
 
 
@@ -180,6 +196,35 @@ def test_publish_move_payload_format():
     print("PASS: publish_move sends correctly structured payload to gomoku/move")
 
 
+def test_publish_move_skips_when_not_connected():
+    reset_state()
+    main_pipeline._mqtt_connected = False
+    main_pipeline._mqtt_client.publish = lambda *args, **kwargs: (_ for _ in ()).throw(
+        AssertionError("publish should not be called when MQTT is disconnected")
+    )
+
+    ok = main_pipeline.publish_move({"player": "black", "row": 8, "column": 8})
+
+    assert ok is False
+    assert main_pipeline._move_number == 0
+    print("PASS: publish_move skips sending when MQTT is disconnected")
+
+
+def test_publish_move_failure_does_not_increment_counter():
+    reset_state()
+
+    class _FailedPublishResult:
+        rc = 99
+
+    main_pipeline._mqtt_client.publish = lambda *args, **kwargs: _FailedPublishResult()
+
+    ok = main_pipeline.publish_move({"player": "black", "row": 8, "column": 8})
+
+    assert ok is False
+    assert main_pipeline._move_number == 0
+    print("PASS: failed MQTT publish does not increment move_number")
+
+
 def test_publish_move_increments_move_number():
     reset_state()
     captured = capture_published()
@@ -250,6 +295,8 @@ if __name__ == "__main__":
     test_cv_rejects_uncertain_change()
     test_cv_updates_old_board_after_move()
     test_publish_move_payload_format()
+    test_publish_move_skips_when_not_connected()
+    test_publish_move_failure_does_not_increment_counter()
     test_publish_move_increments_move_number()
     test_index_conversion_zero_to_one()
     test_index_conversion_boundary()

@@ -1,8 +1,17 @@
-from picamera2 import Picamera2
 import time
+
+try:
+    from picamera2 import Picamera2
+except ImportError:
+    Picamera2 = None
 
 
 def main() -> None:
+    if Picamera2 is None:
+        raise RuntimeError(
+            "Picamera2 is not installed. Run this hardware test on a Raspberry Pi with picamera2 available."
+        )
+
     camera = Picamera2()
 
     try:

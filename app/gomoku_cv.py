@@ -1,34 +1,45 @@
 import argparse
 import json
-import sys
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 
 import cv2
 import numpy as np
 
 try:
-    import paho.mqtt.client as mqtt_client
-except ImportError:
-    mqtt_client = None
-
-try:
     from picamera2 import Picamera2
-except ImportError:
+except ModuleNotFoundError:
     Picamera2 = None
 
-
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
-
+# Reuse the shared preprocessing module so both code paths stay in sync.
+try:
+    from image_preprocessing import preprocess_frame as _preprocess_frame
+    _HAS_PREPROCESSING_MODULE = True
+except ModuleNotFoundError:
+    _HAS_PREPROCESSING_MODULE = False
 
 BOARD_SIZE = 15
 IMAGE_SIZE = 800
 EMPTY = 0
 BLACK = 1
 WHITE = 2
+
+# ArUco stickers sit at the four board corners *outside* the playing grid.
+# IDs are assigned clockwise from the top-left.
+ARUCO_MARKER_IDS = (0, 1, 2, 3)
+# For each marker, pick the corner that faces the playable area (inner corner).
+# OpenCV returns marker corners in order: TL, TR, BR, BL of the marker itself.
+ARUCO_INNER_CORNER_INDEX = {
+    0: 2,  # top-left marker      -> its bottom-right corner
+    1: 3,  # top-right marker     -> its bottom-left corner
+    2: 0,  # bottom-right marker  -> its top-left corner
+    3: 1,  # bottom-left marker   -> its top-right corner
+}
+# Fraction of the playing-grid side that the ArUco quad extends beyond the grid.
+# Matches the printable PDF: 20 cm playing grid with 1 cm white quiet zone
+# between each marker and the nearest grid line. The quiet zone is the minimum
+# ArUco needs to lock onto the marker's outer border. 1 / 20 = 0.05.
+ARUCO_PADDING_RATIO = 1.0 / 20.0  # = 0.05
 
 
 @dataclass
@@ -42,6 +53,8 @@ class Stone:
 
 
 def preprocess_frame(frame):
+    if _HAS_PREPROCESSING_MODULE:
+        return _preprocess_frame(frame)
     resized = cv2.resize(frame, (IMAGE_SIZE, IMAGE_SIZE), interpolation=cv2.INTER_AREA)
     return cv2.GaussianBlur(resized, (5, 5), 0)
 
@@ -69,10 +82,139 @@ def parse_corners(corner_text):
     return order_corners(points)
 
 
-def warp_board(image, corners, output_size=IMAGE_SIZE):
+def _cluster_lines(positions, gap):
+    """Merge line positions that are within gap pixels of each other."""
+    if not positions:
+        return []
+    sorted_pos = sorted(positions)
+    clusters = [[sorted_pos[0]]]
+    for p in sorted_pos[1:]:
+        if p - clusters[-1][-1] < gap:
+            clusters[-1].append(p)
+        else:
+            clusters.append([p])
+    return [int(np.mean(c)) for c in clusters]
+
+
+def _detect_aruco_markers(gray_frame):
+    """Run ArUco detection, handling both new (>=4.7) and legacy OpenCV APIs."""
+    aruco = getattr(cv2, "aruco", None)
+    if aruco is None:
+        return [], None
+
+    dictionary = aruco.getPredefinedDictionary(aruco.DICT_4X4_50)
+    if hasattr(aruco, "DetectorParameters"):
+        parameters = aruco.DetectorParameters()
+    else:
+        parameters = aruco.DetectorParameters_create()
+
+    if hasattr(aruco, "ArucoDetector"):
+        detector = aruco.ArucoDetector(dictionary, parameters)
+        corners, ids, _ = detector.detectMarkers(gray_frame)
+    else:
+        corners, ids, _ = aruco.detectMarkers(gray_frame, dictionary, parameters=parameters)
+
+    return corners, ids
+
+
+def detect_marker_corners(frame):
+    """Detect four ArUco markers (IDs 0..3) and return board corners as
+    [TL, TR, BR, BL] of the marker quad (i.e. the inner corners of each marker).
+
+    Returns None if ArUco is unavailable or not all four markers are visible.
+    """
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    marker_corners_list, ids = _detect_aruco_markers(gray)
+    if ids is None:
+        return None
+
+    found = {}
+    for marker_corners, marker_id in zip(marker_corners_list, np.array(ids).reshape(-1)):
+        marker_id = int(marker_id)
+        if marker_id not in ARUCO_INNER_CORNER_INDEX:
+            continue
+        points = np.array(marker_corners[0], dtype=np.float32)
+        found[marker_id] = points[ARUCO_INNER_CORNER_INDEX[marker_id]]
+
+    if not all(marker_id in found for marker_id in ARUCO_MARKER_IDS):
+        return None
+
+    return np.array([found[0], found[1], found[2], found[3]], dtype=np.float32)
+
+
+def auto_detect_corners(image):
+    """Detect board corners automatically using Hough line transform.
+
+    Returns a (4, 2) float32 array [TL, TR, BR, BL], or None if detection fails.
+    """
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+    edges = cv2.Canny(blurred, 30, 100)
+
+    h, w = image.shape[:2]
+    min_line_len = int(min(h, w) * 0.15)
+    lines = cv2.HoughLinesP(
+        edges, 1, np.pi / 180,
+        threshold=60,
+        minLineLength=min_line_len,
+        maxLineGap=20,
+    )
+    if lines is None:
+        return None
+
+    h_positions, v_positions = [], []
+    for x1, y1, x2, y2 in lines[:, 0]:
+        angle = abs(np.degrees(np.arctan2(y2 - y1, x2 - x1)))
+        if angle < 20 or angle > 160:
+            h_positions.append((y1 + y2) / 2)
+        elif 70 < angle < 110:
+            v_positions.append((x1 + x2) / 2)
+
+    cluster_gap = min(h, w) * 0.04
+    h_clusters = _cluster_lines(h_positions, cluster_gap)
+    v_clusters = _cluster_lines(v_positions, cluster_gap)
+
+    if len(h_clusters) < 2 or len(v_clusters) < 2:
+        return None
+
+    top, bottom = h_clusters[0], h_clusters[-1]
+    left, right = v_clusters[0], v_clusters[-1]
+
+    if bottom - top < min(h, w) * 0.3 or right - left < min(h, w) * 0.3:
+        return None
+
+    # The outermost detected lines are often one cell inside the real board edge.
+    # Expand outward by one estimated cell gap so the warp covers the full grid.
+    h_gap = (bottom - top) / (BOARD_SIZE - 1)
+    v_gap = (right - left) / (BOARD_SIZE - 1)
+    n_h_missing = (BOARD_SIZE - len(h_clusters)) / 2
+    n_v_missing = (BOARD_SIZE - len(v_clusters)) / 2
+    top = int(top - h_gap * max(n_h_missing, 0.5))
+    bottom = int(bottom + h_gap * max(n_h_missing, 0.5))
+    left = int(left - v_gap * max(n_v_missing, 0.5))
+    right = int(right + v_gap * max(n_v_missing, 0.5))
+
+    return np.array(
+        [[left, top], [right, top], [right, bottom], [left, bottom]],
+        dtype=np.float32,
+    )
+
+
+def warp_board(image, corners, output_size=IMAGE_SIZE, padding_ratio=ARUCO_PADDING_RATIO):
+    """Warp the source quad onto an `output_size` square so the *playing grid*
+    fills the output. When `padding_ratio` > 0, the input corners are treated
+    as sitting that fraction *outside* the playing grid, so we map them to a
+    target rectangle that extends off-canvas — pulling the playing grid back
+    to fill 0..output_size."""
     source = order_corners(corners)
+    pad = padding_ratio * output_size
     target = np.array(
-        [[0, 0], [output_size - 1, 0], [output_size - 1, output_size - 1], [0, output_size - 1]],
+        [
+            [-pad, -pad],
+            [output_size - 1 + pad, -pad],
+            [output_size - 1 + pad, output_size - 1 + pad],
+            [-pad, output_size - 1 + pad],
+        ],
         dtype=np.float32,
     )
     matrix = cv2.getPerspectiveTransform(source, target)
@@ -90,70 +232,63 @@ def is_near_grid_intersection(x, y, row, col, image_size):
     cell_gap = image_size / (BOARD_SIZE - 1)
     expected_x = col * cell_gap
     expected_y = row * cell_gap
-    return np.hypot(x - expected_x, y - expected_y) <= cell_gap * 0.38
+    return np.hypot(x - expected_x, y - expected_y) <= cell_gap * 0.50
 
 
-def find_stones_from_mask(mask, color, image_size):
-    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    min_area = (image_size * 0.015) ** 2
-    max_area = (image_size * 0.09) ** 2
-    stones = []
-
-    for contour in contours:
-        area = cv2.contourArea(contour)
-        if area < min_area or area > max_area:
-            continue
-
-        perimeter = cv2.arcLength(contour, True)
-        if perimeter == 0:
-            continue
-
-        circularity = 4 * np.pi * area / (perimeter * perimeter)
-        if circularity < 0.45:
-            continue
-
-        moments = cv2.moments(contour)
-        if moments["m00"] == 0:
-            continue
-
-        x = int(moments["m10"] / moments["m00"])
-        y = int(moments["m01"] / moments["m00"])
-        row, col = point_to_board_position(x, y, image_size)
-        stones.append(Stone(color=color, x=x, y=y, row=row, col=col, area=area))
-
-    return stones
+def _classify_stone_color(board_image, x, y, radius):
+    """Sample pixels inside the circle to determine black or white stone."""
+    hsv = cv2.cvtColor(board_image, cv2.COLOR_BGR2HSV)
+    mask = np.zeros(board_image.shape[:2], dtype=np.uint8)
+    cv2.circle(mask, (x, y), max(1, radius // 2), 255, -1)
+    mean_v = cv2.mean(hsv, mask=mask)[2]
+    mean_s = cv2.mean(hsv, mask=mask)[1]
+    if mean_v < 90:
+        return "black"
+    if mean_v > 140 and mean_s < 70:
+        return "white"
+    return None
 
 
 def find_stones(board_image):
-    hsv = cv2.cvtColor(board_image, cv2.COLOR_BGR2HSV)
     image_size = board_image.shape[0]
+    cell_gap = image_size / (BOARD_SIZE - 1)
+    min_radius = int(cell_gap * 0.22)
+    max_radius = int(cell_gap * 0.46)
 
-    black_mask = cv2.inRange(hsv, np.array([0, 0, 0]), np.array([180, 255, 75]))
-    white_mask = cv2.inRange(hsv, np.array([0, 0, 155]), np.array([180, 80, 255]))
+    gray = cv2.cvtColor(board_image, cv2.COLOR_BGR2GRAY)
+    blurred = cv2.GaussianBlur(gray, (9, 9), 2)
 
-    kernel = np.ones((5, 5), np.uint8)
-    black_mask = cv2.morphologyEx(black_mask, cv2.MORPH_OPEN, kernel)
-    black_mask = cv2.morphologyEx(black_mask, cv2.MORPH_CLOSE, kernel)
-    white_mask = cv2.morphologyEx(white_mask, cv2.MORPH_OPEN, kernel)
-    white_mask = cv2.morphologyEx(white_mask, cv2.MORPH_CLOSE, kernel)
-
-    detected = []
-    detected.extend(find_stones_from_mask(black_mask, "black", image_size))
-    detected.extend(find_stones_from_mask(white_mask, "white", image_size))
+    circles = cv2.HoughCircles(
+        blurred,
+        cv2.HOUGH_GRADIENT,
+        dp=1,
+        minDist=int(cell_gap * 0.7),
+        param1=50,
+        param2=20,
+        minRadius=min_radius,
+        maxRadius=max_radius,
+    )
 
     board = np.zeros((BOARD_SIZE, BOARD_SIZE), dtype=np.uint8)
     stones = []
+    dummy_mask = np.zeros((image_size, image_size), dtype=np.uint8)
 
-    for stone in sorted(detected, key=lambda item: item.area, reverse=True):
-        if not is_near_grid_intersection(stone.x, stone.y, stone.row, stone.col, image_size):
+    if circles is None:
+        return board, stones, dummy_mask, dummy_mask
+
+    for cx, cy, r in np.round(circles[0]).astype(int):
+        row, col = point_to_board_position(cx, cy, image_size)
+        if not is_near_grid_intersection(cx, cy, row, col, image_size):
             continue
+        color = _classify_stone_color(board_image, cx, cy, r)
+        if color is None:
+            continue
+        value = BLACK if color == "black" else WHITE
+        if board[row, col] == EMPTY:
+            board[row, col] = value
+            stones.append(Stone(color=color, x=cx, y=cy, row=row, col=col, area=np.pi * r * r))
 
-        value = BLACK if stone.color == "black" else WHITE
-        if board[stone.row, stone.col] == EMPTY:
-            board[stone.row, stone.col] = value
-            stones.append(stone)
-
-    return board, stones, black_mask, white_mask
+    return board, stones, dummy_mask, dummy_mask
 
 
 def compute_delta(old_board, new_board):
@@ -222,24 +357,11 @@ def process_frame(frame, corners):
 def load_board_state(path):
     if not path.exists():
         return np.zeros((BOARD_SIZE, BOARD_SIZE), dtype=np.uint8)
-    data = json.loads(path.read_text(encoding="utf-8"))
-    if isinstance(data, dict):
-        return np.array(data["board"], dtype=np.uint8)
-    return np.array(data, dtype=np.uint8)
+    return np.array(json.loads(path.read_text(encoding="utf-8")), dtype=np.uint8)
 
 
-def load_move_counter(path):
-    if not path.exists():
-        return 1
-    data = json.loads(path.read_text(encoding="utf-8"))
-    if isinstance(data, dict):
-        return data.get("move_number", 1)
-    return 1
-
-
-def save_board_state(path, board, move_number=1):
-    data = {"board": board.astype(int).tolist(), "move_number": move_number}
-    path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+def save_board_state(path, board):
+    path.write_text(json.dumps(board.astype(int).tolist(), indent=2), encoding="utf-8")
 
 
 def print_board(board):
@@ -250,57 +372,24 @@ def print_board(board):
 
 
 def create_feedback_client(port):
-    from raspberrypi_integration.arduino_feedback_client import ArduinoFeedbackClient
+    from arduino_feedback_client import ArduinoFeedbackClient
 
     return ArduinoFeedbackClient(port=port)
 
 
-def create_mqtt_client(broker, port=1883):
-    if mqtt_client is None:
-        print("[MQTT] paho-mqtt not installed — skipping MQTT publish")
-        return None
-    client = mqtt_client.Client(mqtt_client.CallbackAPIVersion.VERSION2)
-    try:
-        client.connect(broker, port, 60)
-        client.loop_start()
-        print(f"[MQTT] Connected to broker {broker}:{port}")
-        return client
-    except Exception as exc:
-        print(f"[MQTT] Could not connect to broker {broker}:{port} — {exc}")
-        return None
-
-
-def publish_move(client, topic, move_number, color, row, col):
-    # CV uses 0-indexed; dashboard expects 1-indexed with field name "column"
-    payload = json.dumps({
-        "player": color,
-        "row": row + 1,
-        "column": col + 1,
-        "move_number": move_number,
-        "timestamp": datetime.now().isoformat(),
-    })
-    client.publish(topic, payload)
-    print(f"[MQTT] Published: {payload}")
-
-
-def send_feedback(feedback, changes, mqtt=None, topic="gomoku/move", move_counter=None):
+def send_feedback(feedback, changes):
     new_moves = [change for change in changes if change["type"] == "new_move"]
     uncertain_changes = [change for change in changes if change["type"] != "new_move"]
 
     if len(new_moves) == 1 and not uncertain_changes:
         move = new_moves[0]
-        if feedback:
-            if move["color"] == "black":
-                print(f"[Arduino] {feedback.black_move()}")
-            else:
-                print(f"[Arduino] {feedback.white_move()}")
-        if mqtt:
-            move_num = next(move_counter) if move_counter else 1
-            publish_move(mqtt, topic, move_num, move["color"], move["row"], move["col"])
+        if move["color"] == "black":
+            print(f"[Arduino] {feedback.black_move()}")
+        else:
+            print(f"[Arduino] {feedback.white_move()}")
     elif changes:
         print("[CV] Uncertain board update, sending error feedback")
-        if feedback:
-            print(f"[Arduino] {feedback.error()}")
+        print(f"[Arduino] {feedback.error()}")
 
 
 def run_image_mode(args):
@@ -325,27 +414,15 @@ def run_image_mode(args):
     else:
         print("- No new move found")
 
-    feedback = None
     if args.feedback:
         feedback = create_feedback_client(args.arduino_port)
-        if not feedback.connect():
-            feedback = None
+        if feedback.connect():
+            try:
+                send_feedback(feedback, changes)
+            finally:
+                feedback.close()
 
-    mqtt = create_mqtt_client(args.mqtt_broker) if args.mqtt else None
-
-    move_number = load_move_counter(args.state)
-    new_moves = [c for c in changes if c["type"] == "new_move"]
-    try:
-        send_feedback(feedback, changes, mqtt=mqtt, topic=args.mqtt_topic,
-                      move_counter=iter(range(move_number, move_number + 1)))
-    finally:
-        if feedback:
-            feedback.close()
-        if mqtt:
-            mqtt.loop_stop()
-
-    next_move_number = move_number + len(new_moves)
-    save_board_state(args.state, board, next_move_number)
+    save_board_state(args.state, board)
     cv2.imwrite(str(args.output), result_image)
     cv2.imwrite(str(args.black_mask), black_mask)
     cv2.imwrite(str(args.white_mask), white_mask)
@@ -371,10 +448,7 @@ def run_camera_mode(args):
         if not feedback.connect():
             feedback = None
 
-    mqtt = create_mqtt_client(args.mqtt_broker) if args.mqtt else None
-
     old_board = np.zeros((BOARD_SIZE, BOARD_SIZE), dtype=np.uint8)
-    move_number = 1
     try:
         while True:
             ok, frame = camera.read()
@@ -388,10 +462,8 @@ def run_camera_mode(args):
                 if change["type"] == "new_move":
                     print(f"New move: {change['color']} at row {change['row']}, col {change['col']}")
 
-            new_moves = [c for c in changes if c["type"] == "new_move"]
-            send_feedback(feedback, changes, mqtt=mqtt, topic=args.mqtt_topic,
-                          move_counter=iter(range(move_number, move_number + len(new_moves) + 1)))
-            move_number += len(new_moves)
+            if feedback:
+                send_feedback(feedback, changes)
 
             old_board = board.copy()
             cv2.imshow("Gomoku OpenCV Detection", result_image)
@@ -401,8 +473,6 @@ def run_camera_mode(args):
         camera.release()
         if feedback:
             feedback.close()
-        if mqtt:
-            mqtt.loop_stop()
         cv2.destroyAllWindows()
 
 
@@ -417,10 +487,7 @@ def run_picamera2_mode(args, corners):
         if not feedback.connect():
             feedback = None
 
-    mqtt = create_mqtt_client(args.mqtt_broker) if args.mqtt else None
-
     old_board = np.zeros((BOARD_SIZE, BOARD_SIZE), dtype=np.uint8)
-    move_number = 1
     try:
         camera.start()
         print("Started Raspberry Pi camera with Picamera2. Press q to quit.")
@@ -436,10 +503,8 @@ def run_picamera2_mode(args, corners):
                 if change["type"] == "new_move":
                     print(f"New move: {change['color']} at row {change['row']}, col {change['col']}")
 
-            new_moves = [c for c in changes if c["type"] == "new_move"]
-            send_feedback(feedback, changes, mqtt=mqtt, topic=args.mqtt_topic,
-                          move_counter=iter(range(move_number, move_number + len(new_moves) + 1)))
-            move_number += len(new_moves)
+            if feedback:
+                send_feedback(feedback, changes)
 
             old_board = board.copy()
             cv2.imshow("Gomoku OpenCV Detection", result_image)
@@ -449,8 +514,6 @@ def run_picamera2_mode(args, corners):
         camera.stop()
         if feedback:
             feedback.close()
-        if mqtt:
-            mqtt.loop_stop()
         cv2.destroyAllWindows()
 
 
@@ -465,9 +528,6 @@ def build_arg_parser():
     parser.add_argument("--white-mask", type=Path, default=Path("white_mask.jpg"))
     parser.add_argument("--feedback", action="store_true", help="Send B/W/E command to Arduino feedback client")
     parser.add_argument("--arduino-port", default="/dev/ttyACM0", help="Arduino serial port")
-    parser.add_argument("--mqtt", action="store_true", help="Publish detected moves to MQTT broker")
-    parser.add_argument("--mqtt-broker", default="localhost", help="MQTT broker address")
-    parser.add_argument("--mqtt-topic", default="gomoku/move", help="MQTT topic to publish moves on")
     return parser
 
 
