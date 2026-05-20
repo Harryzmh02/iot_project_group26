@@ -18,7 +18,13 @@ except ImportError:
     Picamera2 = None
 
 from arduino_feedback_client import ArduinoFeedbackClient
-from gomoku_cv import BOARD_SIZE, auto_detect_corners, compute_delta, parse_corners, process_frame
+from gomoku_cv import (
+    BOARD_SIZE,
+    compute_delta,
+    detect_marker_corners,
+    parse_corners,
+    process_frame,
+)
 
 
 CAPTURE_INTERVAL_SECONDS = 1.0
@@ -37,12 +43,37 @@ _mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
 _mqtt_success_code = getattr(mqtt, "MQTT_ERR_SUCCESS", 0)
 _mqtt_connected = False
 _move_number = 0
+_last_good_corners = None
+
+
+def resolve_corners(frame: np.ndarray, configured_corners):
+    """ArUco-first corner resolution. Falls back to the last successful detection
+    so transient marker occlusion doesn't blank out the pipeline."""
+    global _last_good_corners
+
+    if configured_corners is not None:
+        corners = (
+            parse_corners(configured_corners)
+            if isinstance(configured_corners, str)
+            else configured_corners
+        )
+        _last_good_corners = np.array(corners, dtype=np.float32)
+        return _last_good_corners
+
+    detected = detect_marker_corners(frame)
+    if detected is not None:
+        _last_good_corners = detected
+        return _last_good_corners
+
+    return _last_good_corners
 
 
 def run_cv_pipeline(frame: np.ndarray, board_corners):
     global _old_board
 
-    corners = parse_corners(board_corners) if isinstance(board_corners, str) else board_corners
+    corners = resolve_corners(frame, board_corners)
+    if corners is None:
+        return None
     board, _, result_image, _, _ = process_frame(frame, corners)
 
     cv2.imshow("Gomoku CV Preview", result_image)
@@ -123,13 +154,7 @@ def main():
 
     active_corners = parse_corners(BOARD_CORNERS) if BOARD_CORNERS else None
     if active_corners is None:
-        print("[Pipeline] No BOARD_CORNERS set — attempting auto-detection from first frame...")
-        _seed_frame = camera.capture_array()
-        active_corners = auto_detect_corners(_seed_frame)
-        if active_corners is not None:
-            print(f"[Pipeline] Board corners auto-detected: {active_corners.tolist()}")
-        else:
-            print("[Pipeline] Auto-detection failed — running without perspective warp.")
+        print("[Pipeline] No BOARD_CORNERS set — ArUco markers will be detected per-frame.")
 
     consecutive_same = 0
     last_board_state = _old_board.copy()

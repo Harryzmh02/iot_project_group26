@@ -24,6 +24,23 @@ EMPTY = 0
 BLACK = 1
 WHITE = 2
 
+# ArUco stickers sit at the four board corners *outside* the playing grid.
+# IDs are assigned clockwise from the top-left.
+ARUCO_MARKER_IDS = (0, 1, 2, 3)
+# For each marker, pick the corner that faces the playable area (inner corner).
+# OpenCV returns marker corners in order: TL, TR, BR, BL of the marker itself.
+ARUCO_INNER_CORNER_INDEX = {
+    0: 2,  # top-left marker      -> its bottom-right corner
+    1: 3,  # top-right marker     -> its bottom-left corner
+    2: 0,  # bottom-right marker  -> its top-left corner
+    3: 1,  # bottom-left marker   -> its top-right corner
+}
+# Fraction of the playing-grid side that the ArUco quad extends beyond the grid.
+# 0.0 = markers sit exactly on the outer grid intersections.
+# 0.05 = markers sit ~5% of the board width outside the outer grid lines.
+# Tune visually with test_aruco_grid.py until the drawn grid overlays the printed one.
+ARUCO_PADDING_RATIO = 0.05
+
 
 @dataclass
 class Stone:
@@ -77,6 +94,52 @@ def _cluster_lines(positions, gap):
         else:
             clusters.append([p])
     return [int(np.mean(c)) for c in clusters]
+
+
+def _detect_aruco_markers(gray_frame):
+    """Run ArUco detection, handling both new (>=4.7) and legacy OpenCV APIs."""
+    aruco = getattr(cv2, "aruco", None)
+    if aruco is None:
+        return [], None
+
+    dictionary = aruco.getPredefinedDictionary(aruco.DICT_4X4_50)
+    if hasattr(aruco, "DetectorParameters"):
+        parameters = aruco.DetectorParameters()
+    else:
+        parameters = aruco.DetectorParameters_create()
+
+    if hasattr(aruco, "ArucoDetector"):
+        detector = aruco.ArucoDetector(dictionary, parameters)
+        corners, ids, _ = detector.detectMarkers(gray_frame)
+    else:
+        corners, ids, _ = aruco.detectMarkers(gray_frame, dictionary, parameters=parameters)
+
+    return corners, ids
+
+
+def detect_marker_corners(frame):
+    """Detect four ArUco markers (IDs 0..3) and return board corners as
+    [TL, TR, BR, BL] of the marker quad (i.e. the inner corners of each marker).
+
+    Returns None if ArUco is unavailable or not all four markers are visible.
+    """
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    marker_corners_list, ids = _detect_aruco_markers(gray)
+    if ids is None:
+        return None
+
+    found = {}
+    for marker_corners, marker_id in zip(marker_corners_list, np.array(ids).reshape(-1)):
+        marker_id = int(marker_id)
+        if marker_id not in ARUCO_INNER_CORNER_INDEX:
+            continue
+        points = np.array(marker_corners[0], dtype=np.float32)
+        found[marker_id] = points[ARUCO_INNER_CORNER_INDEX[marker_id]]
+
+    if not all(marker_id in found for marker_id in ARUCO_MARKER_IDS):
+        return None
+
+    return np.array([found[0], found[1], found[2], found[3]], dtype=np.float32)
 
 
 def auto_detect_corners(image):
@@ -137,10 +200,21 @@ def auto_detect_corners(image):
     )
 
 
-def warp_board(image, corners, output_size=IMAGE_SIZE):
+def warp_board(image, corners, output_size=IMAGE_SIZE, padding_ratio=ARUCO_PADDING_RATIO):
+    """Warp the source quad onto an `output_size` square so the *playing grid*
+    fills the output. When `padding_ratio` > 0, the input corners are treated
+    as sitting that fraction *outside* the playing grid, so we map them to a
+    target rectangle that extends off-canvas — pulling the playing grid back
+    to fill 0..output_size."""
     source = order_corners(corners)
+    pad = padding_ratio * output_size
     target = np.array(
-        [[0, 0], [output_size - 1, 0], [output_size - 1, output_size - 1], [0, output_size - 1]],
+        [
+            [-pad, -pad],
+            [output_size - 1 + pad, -pad],
+            [output_size - 1 + pad, output_size - 1 + pad],
+            [-pad, output_size - 1 + pad],
+        ],
         dtype=np.float32,
     )
     matrix = cv2.getPerspectiveTransform(source, target)
