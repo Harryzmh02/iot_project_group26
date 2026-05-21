@@ -2,6 +2,8 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 
+.venv/
+
 board_state.json
 detected_board.jpg
 black_mask.jpg

@@ -1,4 +1,9 @@
-opencv-contrib-python
-numpy
+# Pure-Python dependencies, installed by pip into the .venv.
+#
+# numpy / OpenCV / Picamera2 are intentionally NOT listed here. On the Pi
+# they come from apt (python3-numpy, python3-opencv, python3-picamera2) and
+# the venv inherits them via --system-site-packages. Installing them from
+# PyPI on a Pi builds from source and is painfully slow. See setup_pi.sh.
+
+paho-mqtt>=2.0   # main_pipeline.py / dashboard/mqtt.py use the v2 CallbackAPIVersion
 pyserial
-paho-mqtt
