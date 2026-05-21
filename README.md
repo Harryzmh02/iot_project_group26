@@ -2,7 +2,7 @@
 
 An IoT system that watches a printable Gomoku board with a Raspberry Pi camera,
 detects each move using computer vision, lights up an Arduino feedback module,
-and publishes live moves to a Node-RED dashboard over MQTT.
+and publishes live moves, current turn state, and winner detection to a Node-RED dashboard over MQTT.
 
 ## How it works
 
@@ -19,7 +19,9 @@ and publishes live moves to a Node-RED dashboard over MQTT.
                                        v
                             +----------------------+
                             | Node-RED dashboard   |
-                            |  (web view)          |
+                            |  - live board state  |
+                            |  - current turn      |
+                            |  - winner detection  |
                             +----------------------+
 ```
 
@@ -43,8 +45,8 @@ iot_project_group26/
 │   ├── periodic_board_capture.py      - capture N stable frames from Picamera2 to ./captured_frames/
 │   ├── frame_stability.py             - "wait for the scene to stop moving" helper
 │   ├── image_preprocessing.py         - resize + blur shared by CV paths
-│   ├── arduino_feedback_client.py     - serial wrapper that sends B/W/E/R commands
-│   └── demo_feedback_sequence.py      - run the four feedback commands once, in order (smoke test)
+│   ├── arduino_feedback_client.py     - serial wrapper that sends B/W/E/R/G commands
+│   └── demo_feedback_sequence.py      - run the basic feedback commands once, in order (smoke test)
 │
 ├── dashboard/                         - Node-RED + MQTT side
 │   ├── flows.json                     - import into Node-RED to get the live board UI
@@ -52,7 +54,7 @@ iot_project_group26/
 │   └── mqtt.py                        - canned move-publisher to demo the dashboard without the Pi
 │
 ├── firmware/
-│   └── gomoku_feedback.ino            - Arduino sketch: reads B/W/E/R on serial, drives LEDs + buzzer
+│   └── gomoku_feedback.ino            - Arduino sketch: reads B/W/E/R/G on serial, drives LEDs + buzzer
 │
 └── tests/
     ├── run_all_tests.sh               - run every no-hardware test, report pass/fail
@@ -83,8 +85,15 @@ The Pi's main loop. Captures frames from Picamera2, gates them through
 `FrameStabilityChecker`, runs `gomoku_cv.process_frame`, computes the delta
 against the previous board state, and on a confirmed single-stone change:
 sends `B` / `W` to the Arduino and publishes a JSON payload to MQTT topic
-`gomoku/move`. ArUco corners are resolved every frame with a last-good
-fallback so a momentary marker occlusion doesn't blank the pipeline.
+`gomoku/move`.
+
+The pipeline also tracks the current player turn, detects five-in-a-row wins,
+and publishes a game-over state when either black or white wins. When a winner
+is detected, it sends `G` to the Arduino so both LEDs stay on continuously to
+indicate the game has ended.
+
+ArUco corners are resolved every frame with a last-good fallback so a momentary
+marker occlusion doesn't blank the pipeline.
 
 Config block at the top: `ARDUINO_PORT`, `MQTT_BROKER`, `MQTT_PORT`, `MQTT_TOPIC`.
 
@@ -116,8 +125,8 @@ consistent.
 
 ### `app/arduino_feedback_client.py`
 Thin pyserial wrapper. Opens `/dev/ttyACM0` at 9600 baud, exposes
-`black_move()`, `white_move()`, `error()`, `reset()`. Each call writes one
-character and reads back the Arduino's ACK line.
+`black_move()`, `white_move()`, `error()`, `reset()`, and `game_over()`.
+Each call writes one character and reads back the Arduino's ACK line.
 
 ### `app/demo_feedback_sequence.py`
 Runs `black_move() -> white_move() -> error() -> reset()` once. Useful for
@@ -127,7 +136,7 @@ pipeline.
 ### `dashboard/flows.json`
 Node-RED export. Drop into Node-RED's import dialog and it'll set up an
 MQTT-in node subscribed to `gomoku/move` plus the UI widgets that render the
-live 15 x 15 board.
+live 15 x 15 board, current player turn, and winner/game-over state.
 
 ### `dashboard/mqtt.py`
 Stand-in publisher that fires a canned sequence of 15 moves to the broker on
@@ -146,6 +155,7 @@ Arduino Uno sketch. Listens on serial; commands:
 | `W`  | white move detected  | white LED on, short beep              |
 | `E`  | error / ambiguous    | both LEDs flash 3x, two low beeps     |
 | `R`  | reset                | both LEDs off                         |
+| `G`  | game over            | both LEDs stay on continuously        |
 
 Pins: black LED = D8, white LED = D9, buzzer = D6.
 
@@ -201,7 +211,8 @@ After printing, verify with a ruler: any marker side = 3.0 cm, full grid =
 Open `firmware/gomoku_feedback.ino` in the Arduino IDE, select board
 "Arduino Uno", port `/dev/ttyACM0` (Linux/macOS) or `COMx` (Windows), and
 upload. Open the serial monitor at 9600 baud — you should see
-`Arduino feedback module ready`.
+`Arduino feedback module ready`. The updated firmware also supports the `G`
+command for game-over feedback, where both LEDs stay on continuously.
 
 Wiring:
 - Black LED: anode -> 220 Ω -> D8, cathode -> GND
@@ -296,7 +307,8 @@ when the network changes — re-check it before each session.
 **4d. Import the Node-RED flow.**
 Browse to `http://<host-ip>:1880`, hamburger menu → Import → paste the
 contents of `dashboard/flows.json` → Deploy. Dashboard UI:
-`http://<host-ip>:1880/ui`. If the broker and Node-RED are on different
+`http://<host-ip>:1880/ui`. The dashboard displays the live board, current
+turn, and winner/game-over state. If the broker and Node-RED are on different
 machines, edit the MQTT broker node inside the flow to point at the broker
 IP instead of `localhost`.
 
@@ -336,9 +348,12 @@ python3 dashboard/mqtt.py               # optional: demo data into the dashboard
 python3 app/main_pipeline.py            # the real thing
 ```
 
-Place a black stone → black LED + short beep, dashboard updates within ~2 s.
-Place a white stone → same with the white LED. Place two stones in the same
-frame or move a stone → Arduino flashes both LEDs + double beep (error).
+Place a black stone → black LED + short beep, dashboard updates within ~2 s,
+and the current turn changes to white. Place a white stone → same with the
+white LED, and the current turn changes back to black. When either side gets
+five in a row, the dashboard shows the winner/game-over state and the Arduino
+keeps both LEDs on continuously. Place two stones in the same frame or move a
+stone → Arduino flashes both LEDs + double beep (error).
 
 ## Troubleshooting
 
@@ -378,9 +393,27 @@ Published to `gomoku/move`:
   "row": 7,
   "column": 7,
   "move_number": 1,
-  "timestamp": "2026-05-20T14:30:55.123456"
+  "timestamp": "2026-05-20T14:30:55.123456",
+  "next_turn": "white",
+  "winner": null,
+  "game_over": false
 }
 ```
 
-`row` and `column` are 1-indexed (1..15). The dashboard expects exactly this
-shape — `tests/test_dashboard_flow_contract.py` is the source of truth.
+When a player wins, the same topic includes the winner and game-over state:
+
+```json
+{
+  "player": "black",
+  "row": 7,
+  "column": 11,
+  "move_number": 9,
+  "timestamp": "2026-05-20T14:31:20.123456",
+  "next_turn": "Game over",
+  "winner": "black",
+  "game_over": true
+}
+```
+
+`row` and `column` are 1-indexed (1..15). The dashboard uses this payload to
+update the live board, current turn display, and winner/game-over display.
