@@ -47,9 +47,10 @@ iot_project_group26/
 │   ├── arduino_feedback_client.py     - serial wrapper that sends B/W/E/R commands
 │   └── demo_feedback_sequence.py      - run the four feedback commands once, in order (smoke test)
 │
-├── dashboard/                         - Node-RED + MQTT side
+├── dashboard/                         - Node-RED + MQTT side (the "frontend")
 │   ├── flows.json                     - import into Node-RED to get the live board UI
 │   ├── standard.json                  - reference payload shape the dashboard expects
+│   ├── requirements                   - dashboard-side Python deps (paho-mqtt) for mqtt.py
 │   └── mqtt.py                        - canned move-publisher to demo the dashboard without the Pi
 │
 ├── firmware/
@@ -255,30 +256,76 @@ python3 -c "import cv2; print(cv2.__version__, hasattr(cv2, 'aruco'))"  # expect
 pip install opencv-contrib-python
 ```
 
-### 4. Set up the MQTT broker + Node-RED
+### 4. Set up the dashboard frontend (MQTT broker + Node-RED)
 
-The broker and dashboard can run on the Pi or on a Mac/PC on the same network
-(typical demo setup: Pi + Mac both joined to a phone's hotspot, broker on the
-Mac).
+The "frontend" is a **Node-RED dashboard** — a web page that subscribes to the
+MQTT topic and draws the live board, move history, and winner. Three pieces
+make it work, and in the standard demo setup **all three run on one laptop**
+(Mac/PC) while the Pi connects to it over Wi-Fi:
 
-**4a. Install both:**
+| Piece          | What it does                                   | Where it runs |
+|----------------|------------------------------------------------|---------------|
+| mosquitto      | MQTT broker — relays `gomoku/move` messages     | the laptop    |
+| Node-RED       | runs `flows.json` and serves the dashboard      | the laptop    |
+| Dashboard page | the `/ui` web page anyone on the network opens  | the laptop    |
 
-On the Pi (or any Linux host):
-```bash
-sudo apt install -y mosquitto nodered
-sudo systemctl enable --now nodered
-```
+Because the broker lives on the laptop, **every other device (the Pi, phones,
+other laptops) reaches it by the laptop's IP address.** That IP — *not* the
+Pi's — is the one that matters. Step 4b is how you find it.
 
-On macOS:
+**4a. Install mosquitto and Node-RED on the laptop.**
+
+macOS:
 ```bash
 brew install mosquitto node-red
 ```
 
-**4b. Configure mosquitto to accept remote connections.**
+Linux / Pi (only if you host the frontend there instead of on a laptop):
+```bash
+sudo apt install -y mosquitto
+# Node-RED: use the official installer — the apt package is outdated
+bash <(curl -sL https://raw.githubusercontent.com/node-red/linux-installers/master/deb/update-nodejs-and-nodered)
+```
+
+**4b. Find your laptop's IP address — do this every session.**
+
+The laptop's Wi-Fi IP changes whenever the network changes, and a phone
+hotspot hands out a fresh one almost every time it restarts. Re-check it at
+the start of every session; a stale IP is the #1 reason "nothing publishes".
+
+macOS (most Macs — Wi-Fi is `en0`):
+```bash
+ipconfig getifaddr en0
+# if that prints nothing, Wi-Fi is on en1:
+ipconfig getifaddr en1
+```
+
+Windows:
+```cmd
+ipconfig
+```
+Read the **IPv4 Address** under "Wireless LAN adapter Wi-Fi".
+
+Linux / Raspberry Pi:
+```bash
+hostname -I        # the first address is the Wi-Fi one
+```
+
+Sanity-check the result:
+- On a phone hotspot it's usually `172.20.10.x`.
+- `169.254.x.x` means "not actually on the network" — reconnect Wi-Fi.
+- `127.0.0.1` is localhost — the Pi cannot reach the laptop on that.
+
+Write this address down — it's referred to as `<LAPTOP_IP>` below. It is used
+in three places: the dashboard URL (4f), the Pi's pipeline config (4g), and —
+only if Node-RED and the broker end up on different machines — the flow's MQTT
+node (4e).
+
+**4c. Configure mosquitto to accept remote connections.**
 By default mosquitto 2.x starts in *local-only mode* — it logs
 `Starting in local only mode. Connections will only be possible from clients
-running on this machine.` That blocks the Pi from reaching a Mac-hosted
-broker. Fix with a minimal config:
+running on this machine.` That blocks the Pi from reaching the broker. Fix it
+with a minimal config:
 
 ```bash
 cat > ~/mosquitto.conf <<'EOF'
@@ -293,25 +340,78 @@ You should now see `Opening ipv4 listen socket on port 1883` **without** the
 local-only line. From the Pi, confirm reachability:
 
 ```bash
-nc -zv <broker-ip> 1883
-# expected: Connection to <broker-ip> 1883 port [tcp/*] succeeded!
+nc -zv <LAPTOP_IP> 1883
+# expected: Connection to <LAPTOP_IP> 1883 port [tcp/*] succeeded!
 ```
 
-If `nc` times out and the broker is on a Mac, allow inbound 1883 in System
-Settings → Network → Firewall (or disable the firewall for the demo).
+If `nc` times out, allow inbound port 1883 in macOS System Settings → Network
+→ Firewall (or disable the firewall for the demo).
 
-**4c. Point the pipeline at the broker.**
-`app/main_pipeline.py` hard-codes `MQTT_BROKER = "172.20.10.3"` (an iPhone
-hotspot IP). Replace it with whatever `ipconfig getifaddr en0` (Mac) or
-`hostname -I` (Pi) reports on the host running mosquitto. The IP changes
-when the network changes — re-check it before each session.
+**4d. Install the Node-RED dashboard module.**
+The flow uses `ui_*` widgets from **`node-red-dashboard` (Dashboard 1.x)**. A
+fresh Node-RED install does not include it, and the imported flow will show
+the board widgets as *"unknown node"* until it is added:
 
-**4d. Import the Node-RED flow.**
-Browse to `http://<host-ip>:1880`, hamburger menu → Import → paste the
-contents of `dashboard/flows.json` → Deploy. Dashboard UI:
-`http://<host-ip>:1880/ui`. If the broker and Node-RED are on different
-machines, edit the MQTT broker node inside the flow to point at the broker
-IP instead of `localhost`.
+1. Start Node-RED: `node-red`
+2. Open the editor at `http://localhost:1880`
+3. Hamburger menu (top-right) → **Manage palette** → **Install** tab
+4. Search `node-red-dashboard`, install version **3.6.6**
+
+> Install `node-red-dashboard`, **not** the newer `@flowfuse/node-red-dashboard`
+> (Dashboard 2.0). The board widget is an AngularJS `ui_template`
+> (`ng-repeat` / `ng-style`), which Dashboard 2.0 does not run.
+
+**4e. Import and deploy the Node-RED flow.**
+
+1. In the editor, hamburger menu → **Import**.
+2. Select the file `dashboard/flows.json` (or paste its contents), then click
+   **Import**. A flow tab labelled **`流程 1`** ("Flow 1") appears, wiring
+   `mqtt in` → `json` → the board / status / history nodes.
+3. The flow's MQTT broker node defaults to `localhost:1883`. If mosquitto runs
+   on the **same laptop** as Node-RED (the standard setup), leave it as is. If
+   the broker is on another machine, double-click the **`mqtt in`** node →
+   edit the broker (pencil icon) → set **Server** to `<LAPTOP_IP>`.
+4. Click the red **Deploy** button (top-right).
+
+After deploying, the `mqtt in` node should show a green **connected** dot. If
+it says *connecting* / *disconnected*, the broker node points at the wrong
+host or mosquitto is not running.
+
+**4f. Open the dashboard.**
+The dashboard web page is served at:
+```
+http://<LAPTOP_IP>:1880/ui
+```
+Open it on the laptop (`localhost` works there too) or on any phone/laptop on
+the same Wi-Fi. You should see three panels:
+
+- **Gomoku Board** — a 15 x 15 board; stones appear as moves arrive
+- **Game Status** — Player, step (move number), Position, Winner, and a
+  **Reset Game** button that clears the board
+- **Move History** — a running list of every move
+
+Smoke-test the whole frontend with no Pi or camera by replaying canned moves:
+```bash
+cd dashboard
+pip install -r requirements          # paho-mqtt
+python3 mqtt.py                      # publishes 15 moves, 2 s apart
+```
+The board should fill in move by move and the Winner field should update.
+(`mqtt.py` publishes to `localhost` — run it on the broker machine, or edit
+its `BROKER` constant to `<LAPTOP_IP>` to run it from elsewhere.)
+
+**4g. Point the Pi at the broker.**
+`app/main_pipeline.py` hard-codes `MQTT_BROKER = "172.20.10.3"`. Edit it to
+your `<LAPTOP_IP>` from step 4b:
+
+```python
+MQTT_BROKER = "<LAPTOP_IP>"   # the laptop running mosquitto
+MQTT_PORT   = 1883
+MQTT_TOPIC  = "gomoku/move"
+```
+
+Re-check this whenever the network changes — the same stale-IP rule from 4b
+applies to the pipeline.
 
 ### 5. Calibrate the camera + verify ArUco
 
@@ -358,9 +458,12 @@ frame or move a stone → Arduino flashes both LEDs + double beep (error).
 | Symptom                                              | Likely cause                                                                  |
 |------------------------------------------------------|-------------------------------------------------------------------------------|
 | `Corners detected via: Hough lines (ArUco fallback)` | Print was scaled, marker dictionary mismatch, or quiet zone violated          |
-| Pipeline runs but nothing publishes                  | MQTT broker not reachable — check `MQTT_BROKER` in `app/main_pipeline.py`     |
-| Mosquitto logs "Starting in local only mode"         | Bind to all interfaces with a config file (`listener 1883 0.0.0.0`) — see 4b |
-| `nc -zv <broker-ip> 1883` from Pi times out          | macOS firewall blocking 1883, or broker still on localhost-only              |
+| Pipeline runs but nothing publishes                  | Stale broker IP — re-run step 4b and update `MQTT_BROKER` in `main_pipeline.py`|
+| Mosquitto logs "Starting in local only mode"         | Bind to all interfaces with a config file (`listener 1883 0.0.0.0`) — see 4c |
+| `nc -zv <LAPTOP_IP> 1883` from Pi times out          | macOS firewall blocking 1883, or broker still on localhost-only              |
+| Dashboard board widgets show "unknown node"          | `node-red-dashboard` not installed — Manage palette → install 3.6.6 (see 4d) |
+| Node-RED `mqtt in` node stuck on "connecting"        | Broker node points at the wrong host, or mosquitto isn't running — see 4e    |
+| Dashboard unreachable from a phone                   | Used `localhost` instead of `<LAPTOP_IP>:1880/ui`, or not on the same Wi-Fi  |
 | Arduino "Serial connection failed"                   | Wrong port — check `ls /dev/ttyACM*` or `ls /dev/ttyUSB*`                     |
 | Stones detected at wrong intersections               | Camera not perpendicular to board, or board curled — re-tape and re-capture   |
 | White stones flagged as empty                        | Background not yellow (poor white contrast) — re-print the supplied PDF       |
