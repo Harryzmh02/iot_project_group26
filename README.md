@@ -33,7 +33,7 @@ placed directly on the printed paper.
 iot_project_group26/
 ├── README.md                          - this file
 ├── requirements.txt                   - Python deps (paho-mqtt, pyserial; opencv/numpy from apt on Pi)
-├── setup_pi.sh                         - one-command Pi setup: apt deps + venv + pip deps
+├── setup_pi.sh                        - one-command Pi setup: apt deps + venv + pip deps
 ├── gomoku_aruco_print.pdf             - ready-to-print A3 board (15x15 grid, 4 ArUco markers, yellow fill)
 ├── .gitignore
 │
