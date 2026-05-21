@@ -33,6 +33,7 @@ placed directly on the printed paper.
 iot_project_group26/
 ├── README.md                          - this file
 ├── requirements.txt                   - Python deps (paho-mqtt, pyserial; opencv/numpy from apt on Pi)
+├── setup_pi.sh                         - one-command Pi setup: apt deps + venv + pip deps
 ├── gomoku_aruco_print.pdf             - ready-to-print A3 board (15x15 grid, 4 ArUco markers, yellow fill)
 ├── .gitignore
 │
@@ -210,35 +211,47 @@ Wiring:
 
 ### 3. Set up the Raspberry Pi
 
-Fresh Raspberry Pi OS (Bookworm or later). Install heavy native deps via apt —
-building numpy/opencv from pip source on Pi is painfully slow:
-
-```bash
-sudo apt update
-sudo apt install -y python3-numpy python3-opencv python3-picamera2 git mosquitto
-```
-
-Clone (or unzip) the project and create a venv that inherits the apt
-packages:
+Fresh Raspberry Pi OS (Bookworm or later). Clone (or unzip) the project, then
+run `setup_pi.sh` — it does the whole setup in one command:
 
 ```bash
 cd ~
 git clone <this-repo-url> iot_project_group26   # or unzip the download
 cd iot_project_group26
+bash setup_pi.sh
+```
+
+The script is safe to re-run and does four things:
+
+1. `apt install`s the heavy native deps (numpy, OpenCV, Picamera2, git,
+   mosquitto). Building numpy/opencv from pip source on a Pi is painfully
+   slow, so they come from apt.
+2. Creates `.venv` with `--system-site-packages` so the venv inherits those
+   apt packages.
+3. `pip install`s the pure-Python deps (`paho-mqtt`, `pyserial`) into the venv.
+4. Verifies `cv2.aruco` works, falling back to `opencv-contrib-python` only if
+   the apt OpenCV build lacks it.
+
+Run it **once per Pi** — the apt packages and the venv persist across reboots,
+so this is not a per-session step. There is no precreated/committed venv: a
+venv is not portable across machines or architectures, and the apt packages it
+relies on live outside it. Every session after setup, just activate the venv
+before running anything:
+
+```bash
+source .venv/bin/activate
+```
+
+If you would rather run the steps by hand, the manual equivalent is:
+
+```bash
+sudo apt update
+sudo apt install -y python3-numpy python3-opencv python3-picamera2 git mosquitto
 python3 -m venv --system-site-packages .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-```
-
-Verify ArUco is in the apt build:
-
-```bash
-python3 -c "import cv2; print(cv2.__version__); print(hasattr(cv2, 'aruco'))"
-```
-
-If it prints `False`, install contrib in the venv only:
-
-```bash
+python3 -c "import cv2; print(cv2.__version__, hasattr(cv2, 'aruco'))"  # expect a version + True
+# if that prints False, install contrib in the venv only:
 pip install opencv-contrib-python
 ```
 
