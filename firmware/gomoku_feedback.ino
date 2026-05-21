@@ -4,6 +4,7 @@
 // 'W' = white move detected
 // 'E' = error / invalid detection
 // 'R' = reset / all off
+// 'G' = game over / both LEDs stay on
 
 const int BLACK_LED = 8;
 const int WHITE_LED = 9;
@@ -56,6 +57,15 @@ void showWhiteMove() {
   beepShort();
 }
 
+void showGameOver() {
+  digitalWrite(BLACK_LED, HIGH);
+  digitalWrite(WHITE_LED, HIGH);
+  tone(BUZZER, 1000, 120);
+  delay(160);
+  tone(BUZZER, 1400, 120);
+  delay(160);
+}
+
 void resetFeedback() {
   digitalWrite(BLACK_LED, LOW);
   digitalWrite(WHITE_LED, LOW);
@@ -78,6 +88,10 @@ void loop() {
       beepError();
       resetFeedback();
       Serial.println("ACK:E");
+    }
+    else if (command == 'G') {
+      showGameOver();
+      Serial.println("ACK:G");
     }
     else if (command == 'R') {
       resetFeedback();

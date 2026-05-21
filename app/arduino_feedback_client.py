@@ -71,7 +71,11 @@ class ArduinoFeedbackClient:
     def reset(self):
         return self._send_command("R")
 
+    def game_over(self):
+        return self._send_command("G")
+
     def close(self):
         if self.serial_conn is not None:
             self.serial_conn.close()
             self.serial_conn = None
+

@@ -19,7 +19,9 @@ except ImportError:
 
 from arduino_feedback_client import ArduinoFeedbackClient
 from gomoku_cv import (
+    BLACK,
     BOARD_SIZE,
+    WHITE,
     compute_delta,
     detect_marker_corners,
     parse_corners,
@@ -30,7 +32,7 @@ from gomoku_cv import (
 CAPTURE_INTERVAL_SECONDS = 1.0
 STABLE_FRAMES_REQUIRED = 3
 ARDUINO_PORT = "/dev/ttyACM0"
-MQTT_BROKER = "172.20.10.3"
+MQTT_BROKER = "192.168.0.235"
 MQTT_PORT = 1883
 MQTT_TOPIC = "gomoku/move"
 
@@ -44,6 +46,49 @@ _mqtt_success_code = getattr(mqtt, "MQTT_ERR_SUCCESS", 0)
 _mqtt_connected = False
 _move_number = 0
 _last_good_corners = None
+_current_turn = "black"
+_game_over = False
+_winner = None
+
+
+def check_winner(board: np.ndarray):
+    """Return 'black' or 'white' if the current board has five in a row."""
+    directions = [
+        (0, 1),   # horizontal
+        (1, 0),   # vertical
+        (1, 1),   # diagonal down-right
+        (1, -1),  # diagonal down-left
+    ]
+
+    for row in range(BOARD_SIZE):
+        for col in range(BOARD_SIZE):
+            value = int(board[row, col])
+            if value == 0:
+                continue
+
+            for dr, dc in directions:
+                count = 1
+
+                r, c = row + dr, col + dc
+                while 0 <= r < BOARD_SIZE and 0 <= c < BOARD_SIZE and int(board[r, c]) == value:
+                    count += 1
+                    r += dr
+                    c += dc
+
+                r, c = row - dr, col - dc
+                while 0 <= r < BOARD_SIZE and 0 <= c < BOARD_SIZE and int(board[r, c]) == value:
+                    count += 1
+                    r -= dr
+                    c -= dc
+
+                if count >= 5:
+                    return "black" if value == BLACK else "white"
+
+    return None
+
+
+def next_player(player: str) -> str:
+    return "white" if player == "black" else "black"
 
 
 def resolve_corners(frame: np.ndarray, configured_corners):
@@ -110,6 +155,9 @@ def publish_move(move: dict) -> bool:
             **move,
             "move_number": next_move_number,
             "timestamp": datetime.now().isoformat(),
+            "next_turn": _current_turn,
+            "winner": _winner,
+            "game_over": _game_over,
         }
     )
 
@@ -125,7 +173,7 @@ def publish_move(move: dict) -> bool:
 
 
 def main():
-    global _mqtt_connected
+    global _mqtt_connected, _current_turn, _game_over, _winner
 
     if Picamera2 is None:
         raise RuntimeError(
@@ -184,10 +232,26 @@ def main():
             pending_move = None
             consecutive_same = 0
 
+            if _game_over:
+                print("[Pipeline] Game is already over. Ignoring new moves until reset/restart.")
+                continue
+
             print(f"[Pipeline] Move detected: {move}")
 
+            if move["player"] != _current_turn:
+                print(f"[Pipeline] Invalid turn: expected {_current_turn}, got {move['player']}")
+                if arduino_ok:
+                    arduino.error()
+                continue
+
+            _winner = check_winner(_old_board)
+            _game_over = _winner is not None
+            _current_turn = "Game over" if _game_over else next_player(move["player"])
+
             if arduino_ok:
-                if move["player"] == "black":
+                if _game_over:
+                    arduino.game_over()
+                elif move["player"] == "black":
                     arduino.black_move()
                 elif move["player"] == "white":
                     arduino.white_move()
@@ -216,3 +280,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

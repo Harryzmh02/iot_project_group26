@@ -2,7 +2,7 @@
     {
         "id": "0fb6c417c00b04d3",
         "type": "tab",
-        "label": "流程 1",
+        "label": "\u6d41\u7a0b 1",
         "disabled": false,
         "info": "",
         "env": []
@@ -213,7 +213,8 @@
                 "1dfa9277613bb38d",
                 "0910525b53d51de3",
                 "1e999f8c13397435",
-                "4aaa3e7fc681a9ba"
+                "4aaa3e7fc681a9ba",
+                "b7c9currentturnfunc"
             ]
         ]
     },
@@ -411,9 +412,9 @@
         "group": "22822d46f84977a1",
         "name": "",
         "order": 3,
-        "width": 0,
-        "height": 0,
-        "format": "<div ng-bind-html=\"msg.payload\"></div>",
+        "width": "0",
+        "height": "12",
+        "format": "<div style=\"min-height: 330px; padding-bottom: 10px; box-sizing: border-box;\" ng-bind-html=\"msg.payload\"></div>",
         "storeOutMessages": true,
         "fwdInMessages": true,
         "resendOnRefresh": true,
@@ -458,8 +459,8 @@
         "type": "function",
         "z": "0fb6c417c00b04d3",
         "name": "reset",
-        "func": "flow.set(\"stones\", []);\nflow.set(\"history\", []);\nflow.set(\"board\", null);\n\nlet boardMsg = {\n    payload: []\n};\n\nlet historyMsg = {\n    payload: \"<b>Move History</b><br>No moves yet.\"\n};\n\nlet playerMsg = {\n    payload: \"-\"\n};\n\nlet stepMsg = {\n    payload: 0\n};\n\nlet positionMsg = {\n    payload: \"-\"\n};\n\nlet winnerMsg = {\n    payload: \"No winner yet\"\n};\n\nnode.status({\n    fill: \"blue\",\n    shape: \"dot\",\n    text: \"game reset\"\n});\n\nreturn [\n    boardMsg,\n    historyMsg,\n    playerMsg,\n    stepMsg,\n    positionMsg,\n    winnerMsg\n];",
-        "outputs": 6,
+        "func": "flow.set(\"stones\", []);\nflow.set(\"history\", []);\nflow.set(\"board\", null);\n\nlet boardMsg = {\n    payload: []\n};\n\nlet historyMsg = {\n    payload: \"<b>Move History</b><br>No moves yet.\"\n};\n\nlet playerMsg = {\n    payload: \"-\"\n};\n\nlet stepMsg = {\n    payload: 0\n};\n\nlet positionMsg = {\n    payload: \"-\"\n};\n\nlet winnerMsg = {\n    payload: \"No winner yet\"\n};\n\nlet currentTurnMsg = {\n    payload: \"black\"\n};\n\nnode.status({\n    fill: \"blue\",\n    shape: \"dot\",\n    text: \"game reset\"\n});\n\nreturn [\n    boardMsg,\n    historyMsg,\n    playerMsg,\n    stepMsg,\n    positionMsg,\n    winnerMsg,\n    currentTurnMsg\n];",
+        "outputs": 7,
         "timeout": 0,
         "noerr": 0,
         "initialize": "",
@@ -485,6 +486,9 @@
             ],
             [
                 "77e9d13125cfe53d"
+            ],
+            [
+                "c3d0currentturntext"
             ]
         ]
     },
@@ -516,5 +520,46 @@
         "modules": {
             "node-red-dashboard": "3.6.6"
         }
+    },
+    {
+        "id": "b7c9currentturnfunc",
+        "type": "function",
+        "z": "0fb6c417c00b04d3",
+        "name": "current turn",
+        "func": "let player = String(msg.payload.player || \"\").trim().toLowerCase();\nlet winner = msg.payload.winner;\nlet gameOver = msg.payload.game_over === true || msg.payload.game_over === \"true\";\n\nif (gameOver || winner) {\n    msg.payload = \"Game over\";\n    return msg;\n}\n\nif (msg.payload.next_turn) {\n    msg.payload = msg.payload.next_turn;\n    return msg;\n}\n\nif (player === \"black\") {\n    msg.payload = \"white\";\n} else if (player === \"white\") {\n    msg.payload = \"black\";\n} else {\n    msg.payload = \"black\";\n}\n\nreturn msg;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 430,
+        "y": 540,
+        "wires": [
+            [
+                "c3d0currentturntext"
+            ]
+        ]
+    },
+    {
+        "id": "c3d0currentturntext",
+        "type": "ui_text",
+        "z": "0fb6c417c00b04d3",
+        "group": "0ed992769374b190",
+        "order": 5,
+        "width": 0,
+        "height": 0,
+        "name": "",
+        "label": "Current Turn",
+        "format": "{{msg.payload}}",
+        "layout": "row-spread",
+        "className": "",
+        "style": false,
+        "font": "",
+        "fontSize": 16,
+        "color": "#000000",
+        "x": 670,
+        "y": 540,
+        "wires": []
     }
 ]
